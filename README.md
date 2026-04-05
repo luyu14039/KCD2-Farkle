@@ -23,13 +23,13 @@
 
 ## 🕹️ 如何联机对战
 
-> 已部署的 GitHub Pages 地址：**`https://<你的用户名>.github.io/KCD2-Farkle/`**
+> 🔗 **在线游玩地址：[https://luyu14039.github.io/KCD2-Farkle](https://luyu14039.github.io/KCD2-Farkle)**
 
 ### 方式一：分享房间链接（最方便）
 
 1. **房主**打开上方网址，点击「**创建房间**」
 2. 系统自动生成 **6 位房间码**，点击「复制链接」将完整链接发给对方  
-   *(链接形如 `https://xxx.github.io/KCD2-Farkle/?room=AB3C7F`)*
+   *(链接形如 `https://luyu14039.github.io/KCD2-Farkle/?room=AB3C7F`)*
 3. **客人**直接点开链接，输入昵称后自动进入房间
 4. 双方连接成功后，房主配置规则，点击「**开始游戏**」
 
@@ -224,7 +224,7 @@ jobs:
 ```
 
 5. 推送代码后，GitHub Actions 自动构建并发布
-6. 访问 `https://<你的用户名>.github.io/KCD2-Farkle/` 即可游玩
+6. 访问 [https://luyu14039.github.io/KCD2-Farkle](https://luyu14039.github.io/KCD2-Farkle) 即可游玩
 
 > **vite.config.ts 已预配置**：生产构建时自动将 `base` 设为 `/KCD2-Farkle/`，无需手动修改。
 
@@ -244,10 +244,23 @@ __farkle.celebrate(3)        // 满屏烟花庆祝
 
 ---
 
-## 📜 免责声明
+## 📜 版权声明与许可协议
 
-本项目为**非商业爱好复刻品**，仅供学习与娱乐使用。  
-《天国拯救2》及其游戏内容版权归 [Warhorse Studios](https://warhorsestudios.cz/) 所有。
+### 关于原版游戏
+
+本项目是 **《天国拯救2》（Kingdom Come: Deliverance 2）** 内置骰子小游戏 Farkle 的**粉丝同人二创复刻品**，与 Warhorse Studios 官方无任何关联。  
+《天国拯救2》的游戏名称、美术风格及相关内容版权均归 [Warhorse Studios s.r.o.](https://warhorsestudios.cz/) 所有。
+
+本项目出于对游戏的热爱而创作，**纯属非商业性质**，不产生任何盈利。若权利方认为本项目存在侵权，请通过 GitHub Issues 或提交 Pull Request 联系作者，收到通知后将立即删除或整改。
+
+### 关于本项目的开源协议
+
+- ✅ 本项目**完全开源**，代码可自由学习与参考
+- ✅ Fork 后进行**非商业的个人二次开发**，须在项目中**注明本仓库来源**
+- ❌ **禁止任何形式的商业使用**，包括但不限于：销售、付费服务、广告盈利等
+- ❌ **禁止基于本项目的商业化二次开发**
+
+> 简而言之：可以玩、可以学、可以改，但不能卖，改了要注明来源。
 
 ---
 
