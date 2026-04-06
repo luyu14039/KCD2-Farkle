@@ -341,6 +341,8 @@ export async function performRoll() {
     const seed = generateSeed();
     const { commitment, nonce } = await createCommitment(seed.toString());
 
+    console.log(`[Farkle] performRoll: seed=${seed}, phase=${get(gameState).phase}, turnScore=${get(gameState).turnScore}`);
+
     // Phase 1: 发送承诺
     sendMessage({ type: 'roll_commit', commitment });
 
@@ -356,10 +358,16 @@ export async function performRoll() {
 
 /** 执行掷骰逻辑（本地 + 对手侧共用） */
 export function executeRoll(seed: number) {
+  const beforeState = get(gameState);
+  const keptBefore = beforeState.dice.filter(d => d.kept).length;
+  const activeBefore = beforeState.dice.filter(d => d.active && !d.kept).length;
+  console.log(`[Farkle] executeRoll: seed=${seed}, 已锁定=${keptBefore}, 待掷=${activeBefore}, phase=${beforeState.phase}`);
+
   gameState.update($s => {
     const newDice = rollDice($s.dice, seed);
     const bust = isBust(newDice);
 
+    console.log(`[Farkle] executeRoll完成: bust=${bust}, rollCount=${$s.rollCount + 1}`);
     return {
       ...$s,
       dice: newDice,
@@ -381,9 +389,11 @@ export function onRollAnimationDone() {
   });
 
   const $s = get(gameState);
+  console.log(`[Farkle] onRollAnimationDone: phase=${$s.phase}, turnScore=${$s.turnScore}`);
   if ($s.phase === 'selecting') {
     // 安全防护：二次检查是否为爆点（防止 executeRoll 漏判）
     if (isBust($s.dice)) {
+      console.warn('[Farkle] onRollAnimationDone: 二次爆点检测触发！');
       gameState.update(s => ({ ...s, phase: 'bust' as GamePhase }));
       showStatus('爆点！本回合得分清零！', 1500);
       setTimeout(() => triggerCommentary('bust', 2), 200);
@@ -424,8 +434,11 @@ export function confirmSelection() {
     setTimeout(() => triggerCommentary('straight', 3), 200);
   }
 
+  const newTurnScoreAfter = $state.turnScore + score;
+  console.log(`[Farkle] confirmSelection: ids=${JSON.stringify($ids)}, +${score}, turnScore: ${$state.turnScore} → ${newTurnScoreAfter}`);
+
   // 广播选择
-  sendMessage({ type: 'select_dice', dieIds: $ids, turnScore: $state.turnScore + score });
+  sendMessage({ type: 'select_dice', dieIds: $ids, turnScore: newTurnScoreAfter });
 
   const prevTurnScore = $state.turnScore;
 
@@ -434,6 +447,7 @@ export function confirmSelection() {
 
     // 检测 Hot Dice
     if (isHotDice(updated.dice)) {
+      console.log('[Farkle] 本地满盘(Hot Dice)！进入 hot_dice 阶段');
       return { ...updated, phase: 'hot_dice' };
     }
 
@@ -464,6 +478,8 @@ export function confirmSelection() {
 
 /** Hot Dice 后重取全部骰子 */
 export function handleHotDice() {
+  const $s = get(gameState);
+  console.log(`[Farkle] handleHotDice: turnScore=${$s.turnScore}, 准备重置所有骰子并重投`);
   gameState.update($s => ({
     ...$s,
     dice: resetDiceForHotDice($s.dice),
@@ -595,6 +611,7 @@ export function bankScore() {
   const $initial = get(gameState);
   const bankedAmount = $initial.turnScore;
 
+  console.log(`[Farkle] bankScore: 玩家${$initial.players[$initial.currentPlayerIndex].id} 结算 ${bankedAmount}分`);
   sendMessage({ type: 'bank_score' });
 
   gameState.update($s => {
@@ -657,6 +674,8 @@ export function bankScore() {
 
 /** 结束回合（爆点或放弃），不加分 */
 export function endTurn(isBustTurn = false) {
+  const $s = get(gameState);
+  console.log(`[Farkle] endTurn: isBust=${isBustTurn}, 当前玩家=${$s.players[$s.currentPlayerIndex].id}, phase=${$s.phase}`);
   if (!isBustTurn) {
     sendMessage({ type: 'end_turn' });
   }
@@ -856,15 +875,38 @@ export function initMessageHandler(): () => void {
         // MVP: 收到承诺后即等待 reveal
         break;
 
-      case 'roll_reveal':
+      case 'roll_reveal': {
+        const $preRoll = get(gameState);
+        console.log(`[Farkle P2P] roll_reveal 收到: seed=${msg.seed}, 当前phase=${$preRoll.phase}, 已锁定=${$preRoll.dice.filter(d => d.kept).length}枚`);
         executeRoll(msg.seed);
         break;
+      }
 
       // ── 回合操作 ──
-      case 'select_dice':
-        // 对手锁定骰子 — 更新本地状态
-        gameState.update($s => keepDice($s, msg.dieIds));
+      case 'select_dice': {
+        // 对手锁定骰子 — 更新本地状态，并用发送方的 turnScore 强同步积分
+        const $preSel = get(gameState);
+        console.log(`[Farkle P2P] select_dice 收到: dieIds=${JSON.stringify(msg.dieIds)}, 权威turnScore=${msg.turnScore}, 本地turnScore=${$preSel.turnScore}`);
+
+        gameState.update($s => {
+          const updated = keepDice($s, msg.dieIds);
+          // 用发送方的 turnScore 作为权威值，防止双端计算偏差
+          const synced = { ...updated, turnScore: msg.turnScore };
+
+          // ─── 满盘(Hot Dice)修复 ─────────────────────────────────
+          // 对手将全部 6 枚骰子锁定后，本地骰子也必须重置为未锁定状态。
+          // 若不重置，下一条 roll_reveal 会在「已全部 kept」的骰子上调用
+          // rollDice()，导致无骰子可掷、isBust([]) 误判为爆点，引发
+          // 回合顺序错乱与双端积分不同步。
+          if (isHotDice(updated.dice)) {
+            console.log('[Farkle P2P] 检测到对手满盘(Hot Dice)！重置骰子，等待对手重投');
+            return { ...synced, dice: resetDiceForHotDice(updated.dice), phase: 'hot_dice' as GamePhase };
+          }
+
+          return synced;
+        });
         break;
+      }
 
       case 'bank_score':
         // 对手结算

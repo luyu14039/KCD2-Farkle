@@ -5,7 +5,7 @@
   import GameBoard from './components/game/GameBoard.svelte';
   import DiceSelector from './components/selection/DiceSelector.svelte';
   import DraftSelector from './components/selection/DraftSelector.svelte';
-  import { appView, gameState, myRole, floatingScore, triggerCommentary, celebrationLevel } from '$lib/stores/gameStore';
+  import { appView, gameState, myRole, floatingScore, triggerCommentary, celebrationLevel, awaitingRoll } from '$lib/stores/gameStore';
   import type { AppView } from '$lib/stores/gameStore';
   import { getRoomCodeFromUrl } from '$lib/network/trystero';
 
@@ -40,6 +40,26 @@
         celebrationLevel.set(level);
         console.info(`[Farkle Debug] celebration level ${level} triggered`);
       },
+      /**
+       * 模拟满盘(Hot Dice)局面，用于调试重投流程。
+       * __farkle.hotDice()           → 以 host 身份、350 回合积分触发满盘
+       * __farkle.hotDice(800, 'guest') → 以 guest 身份、800 分触发满盘
+       */
+      hotDice: (turnScore = 350, asRole: 'host' | 'guest' = 'host') => {
+        myRole.set(asRole);
+        appView.set('game');
+        gameState.update(s => ({
+          ...s,
+          phase: 'hot_dice',
+          currentPlayerIndex: asRole === 'host' ? 0 : 1,
+          turnScore,
+          rollCount: 1,
+          dice: s.dice.map(d => ({ ...d, kept: true, active: true })),
+        }));
+        awaitingRoll.set(true);
+        console.info(`[Farkle Debug] hotDice triggered: asRole=${asRole}, turnScore=${turnScore}`);
+        console.info('[Farkle Debug] → 点击「🔥 满盘！重新掷全部骰子」继续测试重投流程');
+      },
       /** 模拟游戏结束: __farkle.gameOver('host') or __farkle.gameOver('guest', 'guest') */
       gameOver: (winner: 'host' | 'guest' = 'host', asRole?: 'host' | 'guest') => {
         if (asRole) myRole.set(asRole);
@@ -65,6 +85,8 @@
     console.info('  __farkle.celebrate(1)          → 小粒子（8枚金币）');
     console.info('  __farkle.celebrate(2)          → 中粒子（金币+骰子）');
     console.info('  __farkle.celebrate(3)          → 大粒子+屏缘金光）');
+    console.info('  __farkle.hotDice()             → 满盘局面（host，350分）');
+    console.info('  __farkle.hotDice(800, "guest") → 满盘局面（guest，800分）');
   }
 </script>
 
