@@ -99,14 +99,18 @@
       </div>
 
     {:else if lobbyMode === 'create'}
-      <button class="btn-back" onclick={() => lobbyMode = 'choose'}> 返回</button>
-      <CreateRoom />
+      <div class="lobby-view">
+        <button class="btn-back" onclick={() => lobbyMode = 'choose'}>返回</button>
+        <CreateRoom />
+      </div>
 
     {:else if lobbyMode === 'join'}
-      {#if !urlRoomCode}
-        <button class="btn-back" onclick={() => lobbyMode = 'choose'}> 返回</button>
-      {/if}
-      <JoinRoom initialCode={urlRoomCode ?? ''} />
+      <div class="lobby-view">
+        {#if !urlRoomCode}
+          <button class="btn-back" onclick={() => lobbyMode = 'choose'}>返回</button>
+        {/if}
+        <JoinRoom initialCode={urlRoomCode ?? ''} />
+      </div>
     {/if}
 
   {:else if view === 'rps'}
@@ -211,19 +215,42 @@
     border-color: #d4a843;
   }
 
+  .lobby-view {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    width: 100%;
+    max-width: 420px;
+  }
+
   .btn-back {
-    background: transparent;
-    border: none;
-    color: #8a7a5a;
-    font-size: 0.9rem;
+    background: rgba(58, 46, 26, 0.5);
+    border: 1px solid #4a3820;
+    border-radius: 20px;
+    color: #9a8a6a;
+    font-size: 0.88rem;
     cursor: pointer;
     align-self: flex-start;
-    padding: 0.3rem 0;
+    padding: 0.35rem 0.9rem 0.35rem 0.6rem;
     font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+    letter-spacing: 0.02em;
+  }
+
+  .btn-back::before {
+    content: '‹';
+    font-size: 1.25em;
+    line-height: 1;
+    margin-top: -0.05em;
   }
 
   .btn-back:hover {
+    border-color: #d4a843;
     color: #d4a843;
+    background: rgba(212, 168, 67, 0.1);
   }
 
   /* ── 装饰元素 ── */
