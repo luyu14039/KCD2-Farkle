@@ -98,6 +98,51 @@
         </div>
       </div>
 
+      <a
+        class="star-banner"
+        href="https://github.com/luyu14039/KCD2-Farkle"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <span class="star-icon">★</span>
+        如果喜欢这个项目，请在 GitHub 给我一个 Star ！
+        <span class="star-icon">★</span>
+      </a>
+
+      <!-- 作者其他项目 -->
+      <div class="other-projects">
+        <div class="op-header">
+          <span class="op-line"></span>
+          <span class="op-title">作者的其他项目</span>
+          <span class="op-line"></span>
+        </div>
+
+        <p class="op-subtitle">🕯️ 密教模拟器 / 司辰之书 同人二创系列</p>
+        <div class="op-grid">
+          <a class="op-card" href="https://github.com/luyu14039/Which-hour-will-you-serve" target="_blank" rel="noopener noreferrer">
+            <span class="op-card-name">漫宿回响</span>
+            <span class="op-card-desc">人格测试：寻觅你命定的司辰</span>
+          </a>
+          <a class="op-card" href="https://github.com/luyu14039/pale-notes" target="_blank" rel="noopener noreferrer">
+            <span class="op-card-name">苍白卷宗</span>
+            <span class="op-card-desc">AI 驱动文字 RPG · 1900 年代伦敦防剿局探员</span>
+          </a>
+          <a class="op-card" href="https://github.com/luyu14039/tarot-but-hours" target="_blank" rel="noopener noreferrer">
+            <span class="op-card-name">司辰塔罗</span>
+            <span class="op-card-desc">沉浸式塔罗占卜 · AI 守密人亲自解读命运</span>
+          </a>
+          <a class="op-card" href="https://github.com/luyu14039/Hush-House" target="_blank" rel="noopener noreferrer">
+            <span class="op-card-name">噤声书屋</span>
+            <span class="op-card-desc">游戏文本可视化知识图谱与互动阅读室</span>
+          </a>
+        </div>
+
+        <a class="op-card op-card-wide" href="https://github.com/luyu14039/lovers-notebook" target="_blank" rel="noopener noreferrer">
+          <span class="op-card-name">💑 恋爱小本本</span>
+          <span class="op-card-desc">专为情侣设计的「相爱相杀」记录 App · 记仇 / 甜蜜回忆双系统 · 支持 Android</span>
+        </a>
+      </div>
+
     {:else if lobbyMode === 'create'}
       <div class="lobby-view">
         <button class="btn-back" onclick={() => lobbyMode = 'choose'}>返回</button>
@@ -307,5 +352,123 @@
   :global(.btn-secondary:active) {
     transform: translateY(1px);
     filter: brightness(0.95);
+  }
+
+  .star-banner {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-top: 0.2rem;
+    padding: 0.5rem 1.1rem;
+    border: 1px solid #4a3820;
+    border-radius: 20px;
+    background: rgba(18, 11, 3, 0.6);
+    color: #8a7a5a;
+    font-size: 0.82rem;
+    text-decoration: none;
+    font-family: inherit;
+    letter-spacing: 0.02em;
+    transition: border-color 0.2s, color 0.2s, background 0.2s;
+  }
+
+  .star-banner:hover {
+    border-color: #d4a843;
+    color: #d4a843;
+    background: rgba(212, 168, 67, 0.08);
+  }
+
+  .star-icon {
+    color: #c8952a;
+    font-size: 0.9em;
+    transition: color 0.2s;
+  }
+
+  .star-banner:hover .star-icon {
+    color: #f0c040;
+  }
+
+  /* 其他项目卡片区 */
+  .other-projects {
+    width: 100%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .op-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.2rem;
+  }
+
+  .op-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, transparent, #3a2e1a, transparent);
+  }
+
+  .op-title {
+    color: #5a4a2a;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    letter-spacing: 0.04em;
+  }
+
+  .op-subtitle {
+    color: #5a4a2a;
+    font-size: 0.72rem;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }
+
+  .op-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.45rem;
+  }
+
+  .op-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.55rem 0.65rem;
+    background: rgba(14, 9, 2, 0.55);
+    border: 1px solid #2e2310;
+    border-radius: 8px;
+    text-decoration: none;
+    transition: border-color 0.2s, background 0.2s;
+  }
+
+  .op-card:hover {
+    border-color: #6a5030;
+    background: rgba(30, 20, 5, 0.75);
+  }
+
+  .op-card-name {
+    color: #b09050;
+    font-size: 0.86rem;
+    font-weight: bold;
+  }
+
+  .op-card-desc {
+    color: #6a5a3a;
+    font-size: 0.72rem;
+    line-height: 1.45;
+  }
+
+  .op-card-wide {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .op-card-wide .op-card-name {
+    white-space: nowrap;
+  }
+
+  .op-card-wide .op-card-desc {
+    flex: 1;
   }
 </style>
