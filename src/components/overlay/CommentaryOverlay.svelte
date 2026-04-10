@@ -67,12 +67,16 @@
 -->
 <div class="bubble-stack" aria-live="polite" aria-label="旁观者旁白">
   {#each bubbles as b (b.key)}
-    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-    <aside class="bubble" class:visible={b.visible} onclick={() => dismiss(b.key)} title="点击关闭">
+    <div role="button" tabindex="0"
+      class="bubble" class:visible={b.visible}
+      onclick={() => dismiss(b.key)}
+      onkeydown={(e) => e.key === 'Enter' || e.key === ' ' ? dismiss(b.key) : null}
+      title="点击关闭"
+    >
       <button class="bubble-close" onclick={(e) => { e.stopPropagation(); dismiss(b.key); }} aria-label="关闭旁白">×</button>
       <div class="speaker">{b.speaker}</div>
       <p class="text">{b.text}</p>
-    </aside>
+    </div>
   {/each}
 </div>
 

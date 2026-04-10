@@ -27,11 +27,10 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- 半透明幕布，点击关闭 -->
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="backdrop" onclick={onClose} role="dialog" aria-modal="true" aria-label="规则说明">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div class="backdrop" onclick={onClose} role="dialog" aria-modal="true" aria-label="规则说明" tabindex="-1">
   <!-- 面板内部点击不传播到幕布 -->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="panel" onclick={(e) => e.stopPropagation()}>
+  <div class="panel" role="presentation" onclick={(e) => e.stopPropagation()}>
 
     <!-- 标题栏 -->
     <div class="modal-header">
@@ -344,10 +343,6 @@
     color: #c8b888;
     font-size: 0.87rem;
     line-height: 1.55;
-  }
-
-  .bullet-list strong {
-    color: #e8d8a0;
   }
 
   /* ── 步骤列表 ── */
