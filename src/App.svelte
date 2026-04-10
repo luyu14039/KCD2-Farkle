@@ -5,6 +5,7 @@
   import GameBoard from './components/game/GameBoard.svelte';
   import DiceSelector from './components/selection/DiceSelector.svelte';
   import DraftSelector from './components/selection/DraftSelector.svelte';
+  import RulesModal from './components/overlay/RulesModal.svelte';
   import { appView, gameState, myRole, floatingScore, triggerCommentary, celebrationLevel, awaitingRoll } from '$lib/stores/gameStore';
   import type { AppView } from '$lib/stores/gameStore';
   import { getRoomCodeFromUrl } from '$lib/network/trystero';
@@ -12,6 +13,7 @@
   // 检查 URL 是否携带房间码（受邀加入）
   const urlRoomCode = getRoomCodeFromUrl();
   let lobbyMode = $state<'choose' | 'create' | 'join'>(urlRoomCode ? 'join' : 'choose');
+  let showRulesLobby = $state(false);
 
   let view = $state<AppView>('lobby');
   appView.subscribe(v => { view = v; if (v === 'lobby') lobbyMode = 'choose'; });
@@ -117,6 +119,9 @@
           <button class="btn-secondary" onclick={() => lobbyMode = 'join'}>
             加入房间
           </button>
+          <button class="btn-rules-lobby" onclick={() => showRulesLobby = true}>
+            📜 游戏规则
+          </button>
         </div>
       </div>
 
@@ -194,6 +199,10 @@
     <GameBoard />
   {/if}
 </main>
+
+{#if showRulesLobby}
+  <RulesModal onClose={() => showRulesLobby = false} />
+{/if}
 
 <style>
   :global(*) {
@@ -280,6 +289,24 @@
 
   .btn-secondary:hover {
     border-color: #d4a843;
+  }
+
+  .btn-rules-lobby {
+    background: transparent;
+    color: #9a8a6a;
+    border: 1px solid #4a3820;
+    border-radius: 8px;
+    padding: 0.65rem 1.2rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    align-self: stretch;
+  }
+
+  .btn-rules-lobby:hover {
+    color: #d4a843;
+    border-color: #7a6a4a;
   }
 
   .lobby-view {

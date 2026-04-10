@@ -7,6 +7,7 @@
   import ParticleEffect from '../overlay/ParticleEffect.svelte';
   import GameOverDialog from '../overlay/GameOverDialog.svelte';
   import DisconnectOverlay from '../overlay/DisconnectOverlay.svelte';
+  import RulesModal from '../overlay/RulesModal.svelte';
   import PhasePlacard from './PhasePlacard.svelte';
   import {
     gameState, isMyTurn, selectedDieIds, statusMessage, awaitingRoll, myRole,
@@ -27,6 +28,7 @@
   let guestDice = $state<string[]>([]);
   let role = $state<PlayerId>('host');
   let opponentOffline = $state(false);
+  let showRules = $state(false);
 
   gameState.subscribe(s => { dice = s.dice; phase = s.phase; hostDice = s.hostDice; guestDice = s.guestDice; });
   isMyTurn.subscribe(v => { myTurn = v; });
@@ -53,6 +55,9 @@
 </script>
 
 <div class="game-board">
+  <!-- 规则按钮（随时可查） -->
+  <button class="btn-rules" onclick={() => showRules = true} title="查看规则">?</button>
+
   <!-- 状态 Toast -->
   {#if toastMsg}
     <div class="toast">{toastMsg}</div>
@@ -106,6 +111,10 @@
 <GameOverDialog />
 <!-- 对手断线提示 -->
 <DisconnectOverlay />
+<!-- 规则弹窗 -->
+{#if showRules}
+  <RulesModal onClose={() => showRules = false} />
+{/if}
 
 <style>
   .game-board {
@@ -284,5 +293,35 @@
   @keyframes fadeIn {
     from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
     to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+
+  /* ── 规则按钮（右上角固定） ──────────────────────── */
+  .btn-rules {
+    position: fixed;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 50;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(30, 20, 8, 0.82);
+    border: 1px solid rgba(212, 168, 67, 0.45);
+    color: #d4a843;
+    font-size: 1.1rem;
+    font-weight: bold;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s, background 0.15s, transform 0.1s;
+    backdrop-filter: blur(4px);
+    padding: 0;
+  }
+
+  .btn-rules:hover {
+    border-color: #d4a843;
+    background: rgba(50, 35, 10, 0.92);
+    transform: scale(1.08);
   }
 </style>

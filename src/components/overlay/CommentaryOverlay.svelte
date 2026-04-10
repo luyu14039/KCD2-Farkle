@@ -67,7 +67,9 @@
 -->
 <div class="bubble-stack" aria-live="polite" aria-label="旁观者旁白">
   {#each bubbles as b (b.key)}
-    <aside class="bubble" class:visible={b.visible}>
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+    <aside class="bubble" class:visible={b.visible} onclick={() => dismiss(b.key)} title="点击关闭">
+      <button class="bubble-close" onclick={(e) => { e.stopPropagation(); dismiss(b.key); }} aria-label="关闭旁白">×</button>
       <div class="speaker">{b.speaker}</div>
       <p class="text">{b.text}</p>
     </aside>
@@ -78,25 +80,25 @@
   /* 容器：固定在右下角，flex 列排列，子项右对齐（宽度自适应） */
   .bubble-stack {
     position: fixed;
-    bottom: 2rem;
+    bottom: 9rem;
     right: 1rem;
     display: flex;
     flex-direction: column;
     gap: 0.45rem;
     align-items: flex-end;
-    pointer-events: none;
     z-index: 300;
     max-width: 215px;
   }
 
   /* 单条气泡 */
   .bubble {
+    position: relative;
     width: 100%;
     background: linear-gradient(150deg, #2e2010 0%, #1a1008 100%);
     border: 1px solid #4a3418;
     border-left: 3px solid #d4a843;
     border-radius: 8px;
-    padding: 0.6rem 0.8rem;
+    padding: 0.6rem 1.6rem 0.6rem 0.8rem;
     color: #e8d8b0;
     font-size: 0.81rem;
     line-height: 1.55;
@@ -109,12 +111,44 @@
     transition:
       transform 0.36s cubic-bezier(0.22, 1, 0.36, 1),
       opacity 0.36s ease-out;
+    cursor: pointer;
   }
 
   /* 可见态：归位 */
   .bubble.visible {
     transform: translateX(0);
     opacity: 1;
+  }
+
+  .bubble:hover {
+    border-left-color: #e8bf5a;
+  }
+
+  /* 关闭按钮（右上角） */
+  .bubble-close {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.3rem;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: none;
+    border: none;
+    color: #5a4a2a;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    transition: color 0.12s, background 0.12s;
+    font-family: inherit;
+  }
+
+  .bubble-close:hover {
+    color: #d4a843;
+    background: rgba(212, 168, 67, 0.12);
   }
 
   .speaker {
@@ -134,7 +168,7 @@
   @media (max-width: 480px) {
     .bubble-stack {
       max-width: 170px;
-      bottom: 5.2rem;
+      bottom: 11rem;
       right: 0.5rem;
     }
     .bubble {

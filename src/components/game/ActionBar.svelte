@@ -111,75 +111,143 @@
 
   .buttons {
     display: flex;
-    gap: 0.8rem;
+    gap: 0.9rem;
     flex-wrap: wrap;
     justify-content: center;
   }
 
+  /* ── 通用按钮基础 ─────────────────────────────── */
   .btn-action {
-    border: none;
-    border-radius: 10px;
-    padding: 0.75rem 1.5rem;
+    border-radius: 12px;
+    padding: 0.85rem 1.8rem;
     font-size: 1rem;
     font-weight: bold;
     font-family: inherit;
+    letter-spacing: 0.02em;
     cursor: pointer;
-    transition: transform 0.1s, background 0.15s;
+    transition:
+      transform 0.1s ease,
+      filter 0.15s ease,
+      box-shadow 0.15s ease;
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.45rem;
+    /* 浮雕感：上边缘亮线 + 下方阴影 */
+    border: none;
+    position: relative;
   }
 
   .btn-action:hover:not(:disabled) {
-    transform: scale(1.03);
+    transform: scale(1.04);
+    filter: brightness(1.12);
   }
 
   .btn-action:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale(0.97) translateY(1px);
+    filter: brightness(0.95);
   }
 
   .btn-action:disabled {
-    opacity: 0.35;
+    opacity: 0.28;
     cursor: not-allowed;
+    filter: grayscale(30%);
+    box-shadow: none !important;
   }
 
+  /* ── 掷骰（金色） ──────────────────────────────── */
   .btn-roll {
-    background: #d4a843;
-    color: #1a1008;
+    background: linear-gradient(160deg, #e8bf5a 0%, #c89030 55%, #a87020 100%);
+    color: #1a0e05;
+    border: 1px solid #b87828;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 230, 130, 0.45),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+      0 4px 16px rgba(212, 168, 67, 0.35),
+      0 2px 4px rgba(0, 0, 0, 0.4);
+    text-shadow: 0 1px 0 rgba(255, 220, 100, 0.3);
   }
 
   .btn-roll:hover:not(:disabled) {
-    background: #e8bf5a;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 230, 130, 0.45),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+      0 6px 22px rgba(212, 168, 67, 0.55),
+      0 2px 6px rgba(0, 0, 0, 0.4);
   }
 
+  /* ── 锁定（翡翠绿） ────────────────────────────── */
   .btn-confirm {
-    background: #27ae60;
+    background: linear-gradient(160deg, #2ecc71 0%, #1ea855 55%, #167a3e 100%);
     color: #fff;
+    border: 1px solid #158a40;
+    box-shadow:
+      inset 0 1px 0 rgba(100, 255, 160, 0.3),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+      0 4px 16px rgba(39, 174, 96, 0.3),
+      0 2px 4px rgba(0, 0, 0, 0.35);
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
   }
 
   .btn-confirm:hover:not(:disabled) {
-    background: #2ecc71;
+    box-shadow:
+      inset 0 1px 0 rgba(100, 255, 160, 0.3),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+      0 6px 22px rgba(39, 174, 96, 0.5),
+      0 2px 6px rgba(0, 0, 0, 0.35);
   }
 
+  /* ── 结算（深蓝宝石） ──────────────────────────── */
   .btn-bank {
-    background: #2980b9;
+    background: linear-gradient(160deg, #3498db 0%, #1f78b4 55%, #155e8e 100%);
     color: #fff;
+    border: 1px solid #1565a0;
+    box-shadow:
+      inset 0 1px 0 rgba(130, 200, 255, 0.3),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+      0 4px 16px rgba(41, 128, 185, 0.3),
+      0 2px 4px rgba(0, 0, 0, 0.35);
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
   }
 
   .btn-bank:hover:not(:disabled) {
-    background: #3498db;
+    box-shadow:
+      inset 0 1px 0 rgba(130, 200, 255, 0.3),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+      0 6px 22px rgba(41, 128, 185, 0.5),
+      0 2px 6px rgba(0, 0, 0, 0.35);
   }
 
+  /* ── 满盘（火焰橙，动态发光） ───────────────────── */
   .btn-hot {
-    background: #e67e22;
+    background: linear-gradient(160deg, #f39c12 0%, #e67e22 50%, #c0621a 100%);
     color: #fff;
+    border: 1px solid #b05a10;
     font-size: 1.1rem;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 210, 100, 0.35),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+      0 4px 16px rgba(230, 126, 34, 0.4),
+      0 2px 4px rgba(0, 0, 0, 0.4);
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
     animation: glow 1s ease-in-out infinite alternate;
   }
 
   @keyframes glow {
-    from { box-shadow: 0 0 8px rgba(230, 126, 34, 0.4); }
-    to   { box-shadow: 0 0 20px rgba(230, 126, 34, 0.8); }
+    from {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 210, 100, 0.35),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+        0 4px 16px rgba(230, 126, 34, 0.4),
+        0 2px 4px rgba(0, 0, 0, 0.4);
+    }
+    to {
+      box-shadow:
+        inset 0 1px 0 rgba(255, 220, 120, 0.5),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+        0 6px 28px rgba(230, 126, 34, 0.75),
+        0 0 12px rgba(255, 160, 40, 0.4),
+        0 2px 6px rgba(0, 0, 0, 0.4);
+    }
   }
 
   .sub {
