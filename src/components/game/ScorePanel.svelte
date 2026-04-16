@@ -49,7 +49,10 @@
     <div class="player-card" class:active={isActive} class:me={isMe}>
 
       <div class="player-header">
-        <span class="name">{player.name}{isMe ? '（你）' : ''}</span>
+        <span class="name">
+          {#if isActive}<span class="name-dot" aria-hidden="true"></span>{/if}
+          {player.name}{isMe ? '（你）' : ''}
+        </span>
         {#if isActive}
           <span class="turn-badge">当前回合</span>
         {/if}
@@ -96,21 +99,65 @@
   .player-card {
     flex: 1;
     position: relative;
-    background: #2a1e0e;
-    border: 2px solid #3a2e1a;
+    background: linear-gradient(160deg, #2e2010 0%, #231808 100%);
+    border: 1px solid #3a2e1a;
+    border-top: 2px solid transparent;
     border-radius: 10px;
     padding: 0.75rem 1rem;
-    transition: border-color 0.2s;
+    transition: border-color 0.25s, box-shadow 0.25s;
     min-width: 0;
     /* overflow: hidden 已移除（避免裁剪飘字动画） */
   }
 
+  /* 顶部金色渐变线（用 ::before 实现，不影响 border-radius） */
+  .player-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(212, 168, 67, 0.25), transparent);
+    border-radius: 1px;
+    transition: opacity 0.25s;
+    opacity: 0;
+  }
+
+  /* 左侧金色竖线（激活玩家） */
+  .player-card::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 20%;
+    height: 60%;
+    width: 3px;
+    background: linear-gradient(180deg, transparent, #d4a843, transparent);
+    border-radius: 0 2px 2px 0;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
   .player-card.active {
-    border-color: #d4a843;
+    border-color: rgba(212, 168, 67, 0.55);
+    box-shadow:
+      inset 0 0 24px rgba(212, 168, 67, 0.06),
+      0 4px 16px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(212, 168, 67, 0.12);
+  }
+
+  .player-card.active::before {
+    opacity: 1;
+    left: 5%;
+    right: 5%;
+    background: linear-gradient(90deg, transparent, rgba(212, 168, 67, 0.55), transparent);
+  }
+
+  .player-card.active::after {
+    opacity: 1;
   }
 
   .player-card.me {
-    background: #2e220e;
+    background: linear-gradient(160deg, #332514 0%, #281c0a 100%);
   }
 
   .player-header {
@@ -126,16 +173,37 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+  }
+
+  /* 激活玩家名字前的脉冲圆点 */
+  .name-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #d4a843;
+    flex-shrink: 0;
+    animation: pulse-dot 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.35; transform: scale(0.7); }
   }
 
   .turn-badge {
-    background: #d4a843;
+    background: linear-gradient(135deg, #e0b84a 0%, #a07820 100%);
     color: #1a1008;
     font-size: 0.65rem;
     font-weight: bold;
-    padding: 0.15rem 0.4rem;
+    padding: 0.15rem 0.45rem;
     border-radius: 4px;
     white-space: nowrap;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,220,100,0.3);
+    letter-spacing: 0.02em;
   }
 
   .score-row {
@@ -188,9 +256,10 @@
 
   .progress-fill {
     height: 100%;
-    background: #d4a843;
+    background: linear-gradient(90deg, #a07820, #e0b84a 60%, #c89028);
     border-radius: 2px;
-    transition: width 0.3s;
+    transition: width 0.4s ease-out;
+    box-shadow: 0 0 6px rgba(212, 168, 67, 0.4);
   }
 
   /* ── 飘字动画（position:fixed 确保不被任何 overflow 裁剪）── */

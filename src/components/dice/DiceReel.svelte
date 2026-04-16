@@ -118,6 +118,7 @@
   class="reel-viewport"
   class:kept={kept}
   class:selected={selected}
+  class:rolling={rolling}
   class:special={dieType !== 'NormalDie'}
   style:--die-color={themeColor}
 >
@@ -139,17 +140,29 @@
     border:    2px solid #5a4a2a;
     background:      #2a1e0e;
     cursor:    pointer;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s, opacity 0.2s;
     /* 骰子点数颜色：默认米白 */
     color: #f0e6c8;
     position: relative;
     user-select: none;
   }
 
-  /* 选中（待锁定）：金色高亮 */
+  /* 普通悬停（未选中、未锁定）：轻微上浮 */
+  .reel-viewport:hover:not(.kept):not(.selected) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(212, 168, 67, 0.12);
+    border-color: #7a6a3a;
+  }
+
+  /* 选中（待锁定）：金色高亮 + 放大 + 内发光 */
   .reel-viewport.selected {
     border-color: #d4a843;
-    box-shadow:   0 0 10px rgba(212, 168, 67, 0.6);
+    border-width: 2px;
+    transform: scale(1.06);
+    box-shadow:
+      inset 0 0 10px rgba(212, 168, 67, 0.18),
+      0 0 14px rgba(212, 168, 67, 0.55),
+      0 0 0 1px rgba(212, 168, 67, 0.25);
     color: #d4a843;
   }
 
@@ -164,11 +177,12 @@
     box-shadow:   0 0 12px color-mix(in srgb, var(--die-color, #d4a843) 60%, transparent);
   }
 
-  /* 已锁定（kept）：压暗，不可再点击 */
+  /* 已锁定（kept）：压暗去饱和，不可再点击 */
   .reel-viewport.kept {
     border-color: #3a2e1a;
     background:   #1a1208;
     opacity:      0.65;
+    filter:       saturate(0.35);
     cursor:       default;
   }
 
@@ -176,6 +190,13 @@
     /* 初始位置：展示第一枚面（index 0 = 面值 1） */
     transform: translateY(0);
     will-change: transform;
+    filter: none;
+    transition: filter 0.3s ease-out;
+  }
+
+  /* 掷骰中：运动模糊效果 */
+  .reel-viewport.rolling .reel-strip {
+    filter: blur(0.7px);
   }
 
   .reel-face {

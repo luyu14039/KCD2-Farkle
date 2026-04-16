@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
   import { gameState, isMyTurn, awaitingRoll } from '$lib/stores/gameStore';
 
   let phase      = $state('selecting');
@@ -40,8 +41,12 @@
 >
   <span class="rivet rivet-l" aria-hidden="true">◆</span>
   <div class="placard-body">
-    <span class="plc-icon" aria-hidden="true">{info.icon}</span>
-    <span class="plc-text">{info.text}</span>
+    {#key info.text}
+      <div class="plc-inner" transition:fly={{ y: -8, duration: 250 }}>
+        <span class="plc-icon" aria-hidden="true">{info.icon}</span>
+        <span class="plc-text">{info.text}</span>
+      </div>
+    {/key}
   </div>
   <span class="rivet rivet-r" aria-hidden="true">◆</span>
 </div>
@@ -95,11 +100,12 @@
 
   /* 铆钉装饰 */
   .rivet {
-    font-size: 0.5rem;
-    color: rgba(212, 168, 67, 0.45);
+    font-size: 0.55rem;
+    color: rgba(212, 168, 67, 0.6);
     flex-shrink: 0;
     line-height: 1;
     user-select: none;
+    filter: drop-shadow(0 0 3px rgba(212, 168, 67, 0.35));
   }
 
   /* 中央内容 */
@@ -107,13 +113,27 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.45rem;
     flex: 1;
+    /* 固定高度避免切换时高度跳跃 */
+    height: 1.8rem;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* 过渡内容层（{#key} 切换时 fly 动画的容器） */
+  .plc-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    position: absolute;
+    inset: 0;
   }
 
   .plc-icon {
-    font-size: 1rem;
+    font-size: 1.3rem;
     line-height: 1;
+    flex-shrink: 0;
   }
 
   .plc-text {
@@ -121,9 +141,22 @@
     font-size: 0.92rem;
     font-weight: 600;
     letter-spacing: 0.06em;
-    /* 文字本身带微弱金色底光 */
     text-shadow: 0 0 8px rgba(212, 168, 67, 0.25);
     white-space: nowrap;
+    position: relative;
+  }
+
+  /* 文字下方短金色下划线 */
+  .plc-text::after {
+    content: '';
+    position: absolute;
+    bottom: -3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(212, 168, 67, 0.55), transparent);
+    border-radius: 1px;
   }
 
   @media (max-width: 480px) {
@@ -132,7 +165,7 @@
       letter-spacing: 0.03em;
     }
     .plc-icon {
-      font-size: 0.9rem;
+      font-size: 1.1rem;
     }
   }
 </style>

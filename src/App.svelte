@@ -1,4 +1,5 @@
 ﻿<script lang="ts">
+  import { fade } from 'svelte/transition';
   import CreateRoom from './components/lobby/CreateRoom.svelte';
   import JoinRoom from './components/lobby/JoinRoom.svelte';
   import RockPaperScissors from './components/rps/RockPaperScissors.svelte';
@@ -14,6 +15,16 @@
   const urlRoomCode = getRoomCodeFromUrl();
   let lobbyMode = $state<'choose' | 'create' | 'join'>(urlRoomCode ? 'join' : 'choose');
   let showRulesLobby = $state(false);
+
+  // 开屏提示：仅在首次访问时弹出（localStorage 标记）
+  const NOTICE_KEY = 'farkle_notice_v1';
+  let showNotice = $state(
+    typeof localStorage !== 'undefined' && !localStorage.getItem(NOTICE_KEY)
+  );
+  function dismissNotice() {
+    localStorage.setItem(NOTICE_KEY, '1');
+    showNotice = false;
+  }
 
   let view = $state<AppView>('lobby');
   appView.subscribe(v => { view = v; if (v === 'lobby') lobbyMode = 'choose'; });
@@ -78,6 +89,27 @@
         setTimeout(() => celebrationLevel.set(3), 300);
         console.info(`[Farkle Debug] game over: winner=${winner}, asRole=${asRole ?? 'unchanged'}`);
       },
+      /**
+       * 展示得分面板（直接跳转游戏视图）。
+       * __farkle.scorePanel()                    → host 900＋guest 2400，当前回合 host
+       * __farkle.scorePanel(1800, 3200, 'guest') → 自定义得分 + 当前回合 guest
+       */
+      scorePanel: (hostTotal = 900, guestTotal = 2400, active: 'host' | 'guest' = 'host', asRole: 'host' | 'guest' = 'host') => {
+        myRole.set(asRole);
+        appView.set('game');
+        gameState.update(s => ({
+          ...s,
+          phase: 'rolling',
+          currentPlayerIndex: active === 'host' ? 0 : 1,
+          turnScore: 350,
+          rollCount: 1,
+          players: [
+            { ...s.players[0], name: '房主', totalScore: hostTotal },
+            { ...s.players[1], name: '客人', totalScore: guestTotal },
+          ],
+        }));
+        console.info(`[Farkle Debug] scorePanel: host=${hostTotal}, guest=${guestTotal}, active=${active}, asRole=${asRole}`);
+      },
     };
     console.info('%c[Farkle Debug] 调试接口已挂载到 window.__farkle', 'color:#d4a843;font-weight:bold');
     console.info('  __farkle.float(500)            → 触发飘字动画');
@@ -89,6 +121,8 @@
     console.info('  __farkle.celebrate(3)          → 大粒子+屏缘金光）');
     console.info('  __farkle.hotDice()             → 满盘局面（host，350分）');
     console.info('  __farkle.hotDice(800, "guest") → 满盘局面（guest，800分）');
+    console.info('  __farkle.scorePanel()          → 展示得分面板（host 900 vs guest 2400）');
+    console.info('  __farkle.scorePanel(1800,3200,"guest","guest") → 自定义得分');
   }
 </script>
 
@@ -102,6 +136,7 @@
 
 <main class="app">
   {#if view === 'lobby'}
+    <div transition:fade={{ duration: 200 }} class="view-wrapper">
     <h1 class="title">KCD2 Farkle</h1>
     <p class="subtitle">天国拯救2 · 骰子酒馆桌游</p>
     <div class="divider" aria-hidden="true">
@@ -184,24 +219,55 @@
         <JoinRoom initialCode={urlRoomCode ?? ''} />
       </div>
     {/if}
+  </div>
 
   {:else if view === 'rps'}
-    <RockPaperScissors />
+    <div transition:fade={{ duration: 200 }} class="view-wrapper">
+      <RockPaperScissors />
+    </div>
 
   {:else if view === 'dice_selection'}
-    {#if selectionMode === 'draft'}
-      <DraftSelector />
-    {:else}
-      <DiceSelector />
-    {/if}
+    <div transition:fade={{ duration: 200 }} class="view-wrapper">
+      {#if selectionMode === 'draft'}
+        <DraftSelector />
+      {:else}
+        <DiceSelector />
+      {/if}
+    </div>
 
   {:else if view === 'game'}
-    <GameBoard />
+    <div transition:fade={{ duration: 200 }} class="view-wrapper">
+      <GameBoard />
+    </div>
   {/if}
 </main>
 
 {#if showRulesLobby}
   <RulesModal onClose={() => showRulesLobby = false} />
+{/if}
+
+{#if showNotice}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="notice-backdrop" onclick={dismissNotice} role="dialog" aria-modal="true" aria-label="访问提示" tabindex="-1">
+    <div class="notice-panel" role="presentation" onclick={(e) => e.stopPropagation()}>
+      <div class="notice-header">
+        <span class="notice-icon">📡</span>
+        <h2 class="notice-title">联机提示</h2>
+      </div>
+      <div class="notice-body">
+        <p>本项目采用 <strong>P2P 点对点</strong>方式联机，无中继服务器。</p>
+        <p>⚠️ <strong>不推荐</strong>使用手机自带浏览器访问，P2P 连接成功率较低。</p>
+        <p>✅ 推荐使用 <strong>Via 浏览器</strong> 或其他基于 Chromium 的轻量浏览器，以获得更稳定的连接体验。</p>
+      </div>
+      <div class="notice-footer">
+        <label class="notice-check">
+          <input type="checkbox" onchange={(e) => { if ((e.target as HTMLInputElement).checked) localStorage.setItem(NOTICE_KEY, '1'); else localStorage.removeItem(NOTICE_KEY); }} />
+          不再提示
+        </label>
+        <button class="notice-btn" onclick={dismissNotice}>我知道了</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -229,11 +295,37 @@
     z-index: 1;
     display: flex;
     flex-direction: column;
+    align-items: stretch;
+    animation: page-enter 0.55s ease-out;
+  }
+
+  .view-wrapper {
+    display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     min-height: 100dvh;
     padding: 1rem;
     gap: 1rem;
+    width: 100%;
+  }
+
+  .app::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(
+      ellipse 80% 70% at 50% 50%,
+      transparent 30%,
+      rgba(5, 2, 0, 0.45) 100%
+    );
+  }
+
+  @keyframes page-enter {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 
   .title {
@@ -241,13 +333,20 @@
     color: #d4a843;
     text-shadow: 0 0 28px rgba(212, 168, 67, 0.4), 0 2px 8px rgba(0, 0, 0, 0.9);
     margin-bottom: 0;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.1em;
+    animation: shimmer-gold 8s ease-in-out infinite;
+  }
+
+  @keyframes shimmer-gold {
+    0%, 100% { text-shadow: 0 0 28px rgba(212, 168, 67, 0.4), 0 2px 8px rgba(0,0,0,0.9); }
+    50%       { text-shadow: 0 0 44px rgba(212, 168, 67, 0.72), 0 0 18px rgba(212,168,67,0.28), 0 2px 8px rgba(0,0,0,0.9); }
   }
 
   .subtitle {
-    color: #8a7a5a;
+    color: #9a8a68;
     font-size: 1rem;
     margin-bottom: 0;
+    letter-spacing: 0.04em;
   }
 
   .lobby-buttons {
@@ -258,37 +357,51 @@
   }
 
   .btn-primary {
-    background: #d4a843;
+    background: linear-gradient(160deg, #e0b84a 0%, #a07820 100%);
     color: #1a1008;
-    border: none;
+    border: 1px solid #c89028;
     border-radius: 8px;
     padding: 0.85rem 1.5rem;
     font-size: 1.1rem;
     font-weight: bold;
     font-family: inherit;
     cursor: pointer;
-    transition: background 0.15s;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 220, 100, 0.35),
+      0 4px 14px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(212, 168, 67, 0.18);
+    transition: transform 0.1s, filter 0.15s, box-shadow 0.15s;
   }
 
   .btn-primary:hover {
-    background: #e8bf5a;
+    filter: brightness(1.1);
+    transform: scale(1.02);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 220, 100, 0.4),
+      0 6px 20px rgba(0, 0, 0, 0.6),
+      0 0 0 1px rgba(212, 168, 67, 0.3);
   }
 
   .btn-secondary {
-    background: transparent;
+    background: rgba(30, 20, 8, 0.65);
     color: #d4a843;
-    border: 2px solid #5a4a2a;
+    border: 1px solid rgba(212, 168, 67, 0.3);
     border-radius: 8px;
     padding: 0.85rem 1.5rem;
     font-size: 1.1rem;
     font-weight: bold;
     font-family: inherit;
     cursor: pointer;
-    transition: border-color 0.15s;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 220, 100, 0.07),
+      0 3px 10px rgba(0, 0, 0, 0.4);
+    transition: transform 0.1s, filter 0.15s, border-color 0.15s, background 0.15s;
   }
 
   .btn-secondary:hover {
     border-color: #d4a843;
+    background: rgba(212, 168, 67, 0.08);
+    transform: scale(1.01);
   }
 
   .btn-rules-lobby {
@@ -307,6 +420,115 @@
   .btn-rules-lobby:hover {
     color: #d4a843;
     border-color: #7a6a4a;
+  }
+
+  /* ── 开屏提示弹窗 ── */
+  .notice-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(5, 3, 1, 0.82);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    backdrop-filter: blur(4px);
+    padding: 1rem;
+  }
+
+  .notice-panel {
+    background: linear-gradient(160deg, #231a09 0%, #1a1206 100%);
+    border: 1.5px solid #7a5a1a;
+    border-radius: 14px;
+    width: 100%;
+    max-width: 400px;
+    box-shadow:
+      0 0 0 1px rgba(212, 168, 67, 0.12),
+      0 16px 56px rgba(0, 0, 0, 0.8),
+      inset 0 1px 0 rgba(212, 168, 67, 0.12);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .notice-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 1rem 1.2rem 0.85rem;
+    border-bottom: 1px solid #3a2a10;
+  }
+
+  .notice-icon {
+    font-size: 1.3rem;
+    line-height: 1;
+  }
+
+  .notice-title {
+    margin: 0;
+    font-size: 1.05rem;
+    color: #e8d8a0;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+  }
+
+  .notice-body {
+    padding: 1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .notice-body p {
+    margin: 0;
+    font-size: 0.88rem;
+    color: #c8b888;
+    line-height: 1.6;
+  }
+
+  .notice-body strong {
+    color: #e8d8a0;
+  }
+
+  .notice-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1.2rem 1rem;
+    border-top: 1px solid #3a2a10;
+    gap: 1rem;
+  }
+
+  .notice-check {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.82rem;
+    color: #7a6a4a;
+    cursor: pointer;
+  }
+
+  .notice-check input {
+    accent-color: #d4a843;
+    cursor: pointer;
+  }
+
+  .notice-btn {
+    background: linear-gradient(160deg, #c8960a 0%, #a07008 100%);
+    border: 1px solid #e8b830;
+    border-radius: 8px;
+    color: #1a1008;
+    font-size: 0.9rem;
+    font-weight: 700;
+    font-family: inherit;
+    padding: 0.5rem 1.2rem;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    white-space: nowrap;
+  }
+
+  .notice-btn:hover {
+    opacity: 0.9;
+    transform: scale(1.03);
   }
 
   .lobby-view {
@@ -369,13 +591,44 @@
   }
 
   .card-panel {
-    background: rgba(18, 11, 3, 0.88);
-    border: 1px solid #4a3820;
+    position: relative;
+    background: linear-gradient(170deg, #1a1108 0%, #120c04 100%);
+    border: 1px solid rgba(212, 168, 67, 0.22);
     border-radius: 12px;
     padding: 1.5rem;
     width: 100%;
     max-width: 320px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(212, 168, 67, 0.07);
+    box-shadow:
+      inset 0 1px 0 rgba(212, 168, 67, 0.1),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+      0 8px 32px rgba(0, 0, 0, 0.65),
+      0 0 0 1px rgba(212, 168, 67, 0.06);
+  }
+
+  /* 四角 L 形金色装饰 */
+  .card-panel::before,
+  .card-panel::after {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    pointer-events: none;
+  }
+
+  .card-panel::before {
+    top: 6px;
+    left: 6px;
+    border-top: 1px solid rgba(212, 168, 67, 0.5);
+    border-left: 1px solid rgba(212, 168, 67, 0.5);
+    border-radius: 2px 0 0 0;
+  }
+
+  .card-panel::after {
+    bottom: 6px;
+    right: 6px;
+    border-bottom: 1px solid rgba(212, 168, 67, 0.5);
+    border-right: 1px solid rgba(212, 168, 67, 0.5);
+    border-radius: 0 0 2px 0;
   }
 
   .bg-deco {
@@ -397,7 +650,11 @@
     line-height: 1;
   }
 
-  :global(.btn-primary:active),
+  :global(.btn-primary:active) {
+    transform: scale(0.97) translateY(1px) !important;
+    filter: brightness(0.93) !important;
+  }
+
   :global(.btn-secondary:active) {
     transform: translateY(1px);
     filter: brightness(0.95);
