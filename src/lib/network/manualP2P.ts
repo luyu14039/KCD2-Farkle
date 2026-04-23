@@ -16,8 +16,18 @@ const CN_STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
 ];
 
-/** ICE candidate 收集最长等待时间（毫秒）。超时后以当前已收集的候选继续。 */
-const ICE_GATHER_TIMEOUT_MS = 30_000;
+/** 默认模式下 ICE candidate 收集最长等待时间（毫秒）。 */
+const DEFAULT_ICE_GATHER_TIMEOUT_MS = 30_000;
+/** 局域网优先模式下的等待时长（仅 host candidate，通常更快）。 */
+const LAN_ICE_GATHER_TIMEOUT_MS = 6_000;
+
+export type ConnectionMode = 'default' | 'lan';
+
+interface ManualSignalPayloadV2 {
+  v: 2;
+  mode: ConnectionMode;
+  sdp: string;
+}
 
 // ─────────────────────────────────────────────
 //  内部状态（模块级单例）
@@ -33,7 +43,14 @@ const MANUAL_PEER_ID = 'manual-' + Math.random().toString(36).slice(2, 10);
 //  工具函数
 // ─────────────────────────────────────────────
 
-function createPeerConnection(): RTCPeerConnection {
+function createPeerConnection(mode: ConnectionMode): RTCPeerConnection {
+  if (mode === 'lan') {
+    return new RTCPeerConnection({
+      iceServers: [],
+      iceCandidatePoolSize: 0,
+    });
+  }
+
   return new RTCPeerConnection({
     iceServers: CN_STUN_SERVERS,
     iceCandidatePoolSize: 5,
@@ -44,13 +61,13 @@ function createPeerConnection(): RTCPeerConnection {
  * 等待所有 ICE candidate 收集完毕（完整 SDP 模式，非 trickle ICE）。
  * 超过 ICE_GATHER_TIMEOUT_MS 后不再等待，以当前候选继续。
  */
-function waitForIceComplete(peerConnection: RTCPeerConnection): Promise<void> {
+function waitForIceComplete(peerConnection: RTCPeerConnection, timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     if (peerConnection.iceGatheringState === 'complete') {
       resolve();
       return;
     }
-    const timeout = setTimeout(resolve, ICE_GATHER_TIMEOUT_MS);
+    const timeout = setTimeout(resolve, timeoutMs);
     const handler = () => {
       if (peerConnection.iceGatheringState === 'complete') {
         clearTimeout(timeout);
@@ -68,7 +85,7 @@ function waitForIceComplete(peerConnection: RTCPeerConnection): Promise<void> {
  * - 过滤 relay 类型 candidate（无 TURN 服务器时无法使用）
  * - 移除 extmap 扩展行（不影响 DataChannel 连通性）
  */
-function compressSdp(sdp: string): string {
+function compressSdp(sdp: string, mode: ConnectionMode): string {
   return sdp
     .split('\r\n')
     .filter((line) => {
@@ -76,6 +93,8 @@ function compressSdp(sdp: string): string {
         const parts = line.split(' ');
         // parts[4] = 连接地址；IPv6 地址包含冒号
         if (parts.length > 4 && parts[4].includes(':')) return false;
+        // 局域网优先：仅保留 host candidate，避免公网候选拖慢连接
+        if (mode === 'lan' && !line.includes(' typ host')) return false;
         // relay 类型无 TURN 服务器时无效
         if (line.includes(' typ relay')) return false;
       }
@@ -90,21 +109,48 @@ function compressSdp(sdp: string): string {
  * SDP 字符串 → URL-safe Base64 连接码
  * 使用 URL-safe 变体（- 和 _），避免粘贴时被格式化工具截断
  */
-function encodeSdp(sdp: string): string {
-  return btoa(compressSdp(sdp))
+function encodeBase64Url(text: string): string {
+  return btoa(text)
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 }
 
-/** URL-safe Base64 连接码 → SDP 字符串 */
-function decodeSdp(b64: string): string {
+function decodeBase64Url(b64: string): string {
   const standard = b64
     .trim()
     .replace(/-/g, '+')
     .replace(/_/g, '/')
     .padEnd(b64.trim().length + ((4 - (b64.trim().length % 4)) % 4), '=');
   return atob(standard);
+}
+
+/** 生成带版本信息的连接码（兼容未来扩展） */
+function encodeSignalPayload(sdp: string, mode: ConnectionMode): string {
+  const payload: ManualSignalPayloadV2 = {
+    v: 2,
+    mode,
+    sdp: compressSdp(sdp, mode),
+  };
+  return `kcd2.${encodeBase64Url(JSON.stringify(payload))}`;
+}
+
+/** 解析连接码（兼容旧版纯 SDP Base64 连接码） */
+function decodeSignalPayload(code: string): { mode: ConnectionMode; sdp: string } {
+  const normalized = code.trim();
+  if (normalized.startsWith('kcd2.')) {
+    const encoded = normalized.slice(5);
+    const parsed = JSON.parse(decodeBase64Url(encoded)) as Partial<ManualSignalPayloadV2>;
+    if (parsed.v !== 2 || !parsed.sdp || (parsed.mode !== 'default' && parsed.mode !== 'lan')) {
+      throw new Error('连接码版本不受支持');
+    }
+    return { mode: parsed.mode, sdp: parsed.sdp };
+  }
+
+  return {
+    mode: 'default',
+    sdp: decodeBase64Url(normalized),
+  };
 }
 
 // ─────────────────────────────────────────────
@@ -162,9 +208,9 @@ function setupDataChannel(channel: RTCDataChannel): void {
  * 创建方（A / 房主）：生成 Offer 连接码。
  * 内部等待 ICE candidate 收集完毕（最长 30s），返回完整连接码。
  */
-export async function startOffer(): Promise<string> {
+export async function startOffer(mode: ConnectionMode = 'default'): Promise<string> {
   closeManualConnection();
-  pc = createPeerConnection();
+  pc = createPeerConnection(mode);
 
   // 创建方主动建立 DataChannel
   const channel = pc.createDataChannel('game', { ordered: true });
@@ -174,43 +220,58 @@ export async function startOffer(): Promise<string> {
   await pc.setLocalDescription(offer);
 
   console.log('[ManualP2P] 开始收集 ICE candidate（Offer 方）…');
-  await waitForIceComplete(pc);
+  await waitForIceComplete(
+    pc,
+    mode === 'lan' ? LAN_ICE_GATHER_TIMEOUT_MS : DEFAULT_ICE_GATHER_TIMEOUT_MS,
+  );
 
   const candidateCount = pc.localDescription?.sdp
     .split('\r\n')
     .filter((l) => l.startsWith('a=candidate:')).length ?? 0;
   console.log(`[ManualP2P] ICE 收集完毕，有效候选数: ${candidateCount}`);
 
-  return encodeSdp(pc.localDescription!.sdp);
+  return encodeSignalPayload(pc.localDescription!.sdp, mode);
 }
 
 /**
  * 加入方（B / 客人）：接受 Offer 码，生成 Answer 码。
  */
-export async function acceptOffer(offerCode: string): Promise<string> {
+export async function acceptOffer(
+  offerCode: string,
+  preferredMode: ConnectionMode = 'default',
+): Promise<{ answerCode: string; mode: ConnectionMode }> {
   closeManualConnection();
-  pc = createPeerConnection();
+
+  const offerPayload = decodeSignalPayload(offerCode);
+  const mode = offerPayload.mode ?? preferredMode;
+
+  pc = createPeerConnection(mode);
 
   // 加入方等待对方建立的 DataChannel
   pc.ondatachannel = (event: RTCDataChannelEvent) => {
     setupDataChannel(event.channel);
   };
 
-  const offerSdp = decodeSdp(offerCode);
-  await pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
+  await pc.setRemoteDescription({ type: 'offer', sdp: offerPayload.sdp });
 
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
 
   console.log('[ManualP2P] 开始收集 ICE candidate（Answer 方）…');
-  await waitForIceComplete(pc);
+  await waitForIceComplete(
+    pc,
+    mode === 'lan' ? LAN_ICE_GATHER_TIMEOUT_MS : DEFAULT_ICE_GATHER_TIMEOUT_MS,
+  );
 
   const candidateCount = pc.localDescription?.sdp
     .split('\r\n')
     .filter((l) => l.startsWith('a=candidate:')).length ?? 0;
   console.log(`[ManualP2P] ICE 收集完毕，有效候选数: ${candidateCount}`);
 
-  return encodeSdp(pc.localDescription!.sdp);
+  return {
+    answerCode: encodeSignalPayload(pc.localDescription!.sdp, mode),
+    mode,
+  };
 }
 
 /**
@@ -219,8 +280,8 @@ export async function acceptOffer(offerCode: string): Promise<string> {
  */
 export async function finalizeAnswer(answerCode: string): Promise<void> {
   if (!pc) throw new Error('PeerConnection 未初始化，请先调用 startOffer()');
-  const answerSdp = decodeSdp(answerCode);
-  await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+  const answerPayload = decodeSignalPayload(answerCode);
+  await pc.setRemoteDescription({ type: 'answer', sdp: answerPayload.sdp });
   console.log('[ManualP2P] Remote description 已设置，等待 DataChannel 建立…');
 }
 
