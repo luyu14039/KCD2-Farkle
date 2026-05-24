@@ -6,21 +6,17 @@ import type { GameMessage } from './protocol';
 //  配置
 // ─────────────────────────────────────────────
 
-// MQTT 信令：使用公共 MQTT broker，国内网络可达性远优于 Nostr
-const APP_ID = 'kcd2-farkle-2026';
+const APP_ID = 'kcd2-farkle-v2';
 
 /**
- * 中国优先的 MQTT broker 列表（均为免费公共服务，走 WSS 443/8084 端口）。
- * - broker-cn.emqx.io：EMQ X 中国区专用节点，国内延迟最低
- * - broker.emqx.io：EMQ X 全球节点（中国公司，国内线路稳定）
- * - broker.hivemq.com：HiveMQ 全球 CDN，欧美网络备用
- * - test.mosquitto.org：Eclipse 官方测试服务器（最后兜底）
+ * MQTT broker 列表（按国内网络可达性排序）。
+ * Trystero 连接第一个可达的 broker，其余作为备选。
  */
-const CN_FRIENDLY_RELAY_URLS = [
+const RELAY_URLS = [
   'wss://broker-cn.emqx.io:8084/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
+  'wss://mqtt.eclipseprojects.io:443/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
-  'wss://test.mosquitto.org:8081/mqtt',
 ];
 
 // ─────────────────────────────────────────────
@@ -29,24 +25,25 @@ const CN_FRIENDLY_RELAY_URLS = [
 
 export type ConnectionStatus =
   | 'idle'
-  | 'signaling'      // 已发起请求，正在连接 Nostr 信令服务器
-  | 'waiting_peer'   // 信令已就绪，等待对手加入房间
-  | 'connected'      // P2P 通道已建立
-  | 'disconnected'   // 对手断开
-  | 'timeout';       // 等待超时（30s 内无对手加入）
+  | 'signaling'
+  | 'waiting_peer'
+  | 'connected'
+  | 'disconnected'
+  | 'timeout';
 
 export interface NetworkState {
   status: ConnectionStatus;
   roomCode: string | null;
   peerId: string | null;
-  /** 进入 waiting_peer 状态的时间戳（ms），用于 UI 计算已等待秒数 */
   waitingSince: number | null;
 }
 
 type MessageHandler = (msg: GameMessage, peerId: string) => void;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RawHandler = (data: any, peerId: string) => void;
 
 // ─────────────────────────────────────────────
-//  响应式状态（Svelte store）
+//  响应式状态
 // ─────────────────────────────────────────────
 
 export const networkState = writable<NetworkState>({
@@ -62,105 +59,359 @@ export const networkState = writable<NetworkState>({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let room: ReturnType<typeof joinRoom> | null = null;
-let sendFn: ((msg: GameMessage) => void) | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let sendFn: ((data: any) => void) | null = null;
 let messageHandlers: MessageHandler[] = [];
-
-/** 阶段切换：3s 后从 signaling → waiting_peer（MQTT broker 握手约需 1-3s） */
-let signalingTimer: ReturnType<typeof setTimeout> | null = null;
-/** 连接超时：60s 内无对手加入 → timeout（国内网络预留更多时间） */
-let connectionTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+let rawHandlers: RawHandler[] = [];
 
 const SIGNALING_PHASE_MS = 3000;
+const NO_PEER_RETRY_MS = 15_000;
+const MAX_RETRIES = 3;
 const CONNECTION_TIMEOUT_MS = 60_000;
+const PEER_HEALTH_CHECK_MS = 5000;
 
-function clearConnectionTimers() {
-  if (signalingTimer !== null) { clearTimeout(signalingTimer); signalingTimer = null; }
-  if (connectionTimeoutTimer !== null) { clearTimeout(connectionTimeoutTimer); connectionTimeoutTimer = null; }
+let signalingTimer: ReturnType<typeof setTimeout> | null = null;
+let noPeerTimer: ReturnType<typeof setTimeout> | null = null;
+let connectionTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+let peerCheckInterval: ReturnType<typeof setInterval> | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+let currentRoomCode: string | null = null;
+let connecting = false;
+let reconnecting = false;
+
+/** 防止 onPeerJoin 中重复调用 makeAction 注册 receive handler */
+let gameActionSetup = false;
+
+/**
+ * 是否由此端主动发起重连。
+ * Host 端应设为 false（原地等待 Guest 重连），Guest 端应设为 true。
+ * 避免双方同时重连造成的竞争条件。
+ */
+let autoReconnectEnabled = true;
+export function setAutoReconnect(enabled: boolean) {
+  autoReconnectEnabled = enabled;
+  console.log(`[Network] 自动重连: ${enabled ? '启用 (Guest 模式)' : '禁用 (Host 模式)'}`);
 }
 
 // ─────────────────────────────────────────────
-//  房间操作
+//  内部工具
+// ─────────────────────────────────────────────
+
+function clearAllTimers() {
+  if (signalingTimer !== null) { clearTimeout(signalingTimer); signalingTimer = null; }
+  if (noPeerTimer !== null) { clearTimeout(noPeerTimer); noPeerTimer = null; }
+  if (connectionTimeoutTimer !== null) { clearTimeout(connectionTimeoutTimer); connectionTimeoutTimer = null; }
+  if (peerCheckInterval !== null) { clearInterval(peerCheckInterval); peerCheckInterval = null; }
+  if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+}
+
+function cleanupRoom() {
+  if (room) {
+    try { room.leave(); } catch { /* ignore */ }
+    room = null;
+  }
+  gameActionSetup = false;
+}
+
+function stopPeerHealthCheck() {
+  if (peerCheckInterval !== null) {
+    clearInterval(peerCheckInterval);
+    peerCheckInterval = null;
+  }
+}
+
+/**
+ * 监控 WebRTC 底层连接状态。
+ * 通过 Trystero 的 getPeers() 访问 RTCPeerConnection 对象。
+ */
+/** 连接建立的时间戳，用于健康检查冷静期 */
+let connectedAt = 0;
+
+function startPeerHealthCheck() {
+  stopPeerHealthCheck();
+  connectedAt = Date.now();
+
+  peerCheckInterval = setInterval(() => {
+    if (!room) { stopPeerHealthCheck(); return; }
+
+    // 连接后 10 秒冷静期：不检测断线，避免 WebRTC 稳定前的误报
+    const gracePeriodMs = 10_000;
+    if (Date.now() - connectedAt < gracePeriodMs) return;
+
+    try {
+      const peers = room.getPeers();
+      const peerIds = Object.keys(peers);
+
+      if (peerIds.length === 0) {
+        const ns = getNetworkStatus();
+        if (ns === 'connected') {
+          console.warn('[Network] 健康检查: 无 peer 连接，标记为断线');
+          networkState.update(s => ({ ...s, status: 'disconnected', peerId: null }));
+          stopPeerHealthCheck();
+          if (autoReconnectEnabled) startReconnect();
+        }
+        return;
+      }
+
+      for (const pid of peerIds) {
+        const pc = peers[pid];
+        const state = pc.connectionState;
+        if (state === 'failed') {
+          console.warn(`[Network] WebRTC connectionState=failed for ${pid}`);
+          networkState.update(s => ({ ...s, status: 'disconnected', peerId: null }));
+          stopPeerHealthCheck();
+          if (autoReconnectEnabled) startReconnect();
+          return;
+        }
+        if (state === 'disconnected') {
+          console.warn(`[Network] WebRTC connectionState=disconnected for ${pid}，等待恢复...`);
+        }
+      }
+    } catch (err) {
+      console.warn('[Network] 健康检查异常:', err);
+    }
+  }, PEER_HEALTH_CHECK_MS);
+}
+
+function getNetworkStatus(): ConnectionStatus {
+  let s: ConnectionStatus = 'idle';
+  const unsub = networkState.subscribe(ns => { s = ns.status; });
+  unsub();
+  return s;
+}
+
+// ─────────────────────────────────────────────
+//  核心：单房间 + 重试连接
 // ─────────────────────────────────────────────
 
 /**
- * 加入（或创建）房间。
- * 房主和加入方调用相同函数——Trystero 通过相同 roomCode 自动撮合。
- * 第一个进入的人等待，第二个进入后双方 onPeerJoin 都触发，连接建立。
- *
- * @param roomCode  6位房间码（大写字母+数字）
+ * 创建单个 MQTT 房间（Trystero 自动连接 relayUrls 中第一个可达的 broker）。
+ * 调用方在 15s 内等待 onPeerJoin，超时后重试（随机打乱 relay 顺序）。
  */
-export function initRoom(roomCode: string): void {
-  // 清理旧连接和计时器
-  clearConnectionTimers();
-  room?.leave();
+function trySingleConnect(roomCode: string, relayUrls: string[], attempt: number, isReconnect: boolean): void {
+  const label = isReconnect ? '重连' : '连接';
+  console.log(`[Network] ${label}尝试 #${attempt}，relay 顺序: ${relayUrls.map(u => { try { return new URL(u).hostname; } catch { return u; } }).join(', ')}`);
 
-  room = joinRoom({ appId: APP_ID, relayUrls: CN_FRIENDLY_RELAY_URLS }, roomCode);
+  // 清理之前的连接
+  cleanupRoom();
+  sendFn = null;
 
-  // GameMessage 是纯 JSON 可序列化数据，断言绕过 trystero 的 DataPayload 约束
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [send, receive] = room.makeAction<any>('game');
-  sendFn = (msg: GameMessage) => send(msg);
+  const timedOut = { value: false };
 
-  // 阶段 1：信令连接中（正在连接 MQTT broker）
-  networkState.set({ status: 'signaling', roomCode, peerId: null, waitingSince: null });
-  console.log(`[Network] initRoom: 进入 signaling 阶段 (MQTT), roomCode=${roomCode}`);
+  // 全局超时
+  connectionTimeoutTimer = setTimeout(() => {
+    timedOut.value = true;
+    cleanupRoom();
+    sendFn = null;
+    connecting = false;
+    if (isReconnect) reconnecting = false;
+    console.warn(`[Network] ${label}总超时（${CONNECTION_TIMEOUT_MS / 1000}s）`);
+    networkState.set({ status: 'timeout', roomCode, peerId: null, waitingSince: null });
+  }, CONNECTION_TIMEOUT_MS);
 
-  // 2.5s 后切换到「等待对手」阶段（Nostr 信令通常在此之前已就绪）
+  // 15s 无 peer → 重试
+  function scheduleNoPeerRetry() {
+    noPeerTimer = setTimeout(() => {
+      if (timedOut.value) return;
+
+      if (attempt < MAX_RETRIES) {
+        console.log(`[Network] ${label} ${NO_PEER_RETRY_MS / 1000}s 无 peer，重试 #${attempt + 1}...`);
+        cleanupRoom();
+        sendFn = null;
+        // 重连时保持相同 relay 顺序，确保双方走到同一 broker；
+        // 仅初始连接时打乱顺序以分散 MQTT 服务器负载
+        const nextRelays = isReconnect ? relayUrls : [...RELAY_URLS].sort(() => Math.random() - 0.5);
+        // 随机延迟 2-4s，让双方不在同一瞬间重试（分散竞争窗口）
+        const delay = 2000 + Math.random() * 2000;
+        setTimeout(() => {
+          if (!timedOut.value) {
+            trySingleConnect(roomCode, nextRelays, attempt + 1, isReconnect);
+          }
+        }, delay);
+      } else {
+        console.warn(`[Network] ${label} 超过最大重试次数（${MAX_RETRIES}），放弃`);
+        cleanupRoom();
+        sendFn = null;
+        connecting = false;
+        if (isReconnect) reconnecting = false;
+        networkState.set({ status: 'timeout', roomCode, peerId: null, waitingSince: null });
+      }
+    }, NO_PEER_RETRY_MS);
+  }
+
+  try {
+    room = joinRoom(
+      { appId: APP_ID, relayUrls },
+      roomCode,
+      {
+        onJoinError: (err) => {
+          console.warn(`[Network] MQTT 连接错误:`, err.error);
+          // onJoinError 表示 MQTT broker 连接失败；Trystero 内部会尝试下一个 relay。
+          // 如果所有 relay 都失败，Trystero 不会回调 onPeerJoin，noPeerRetry 会触发。
+        },
+      }
+    );
+
+    room.onPeerJoin((peerId: string) => {
+      if (timedOut.value) return;
+
+      clearAllTimers();
+      connecting = false;
+      reconnecting = false;
+
+      if (!gameActionSetup) {
+        // 首次连接：初始化消息通道
+        gameActionSetup = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const [send, receive] = room!.makeAction<any>('game');
+        sendFn = (data: any) => { send(data); };
+
+        receive((msg: unknown, pid: string) => {
+          const data = msg as Record<string, unknown>;
+          rawHandlers.forEach(h => h(data, pid));
+          if (data && typeof data.type === 'string') {
+            messageHandlers.forEach(h => h(data as GameMessage, pid));
+          }
+        });
+      } else {
+        // 重连：只更新 sendFn（Trystero 同房间 makeAction 返回同一 action，
+        // 新的 send 指向新 DataChannel，receive 仍由首次注册的回调处理）
+        console.log('[Network] 重连检测到，更新 sendFn（复用已有 receive handler）');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const [send, _receive] = room!.makeAction<any>('game');
+        sendFn = (data: any) => { send(data); };
+      }
+
+      // 捕获当前房间引用，防止重试后闭包误触发
+      const thisRoom = room;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      thisRoom!.onPeerLeave((_pid: string) => {
+        console.log(`[Network] 对手离开 (autoReconnect=${autoReconnectEnabled})`);
+        // 仅当离开的是当前活跃房间时触发断开逻辑
+        if (room !== thisRoom) {
+          console.log('[Network] 忽略旧房间的 onPeerLeave（已重试到新房间）');
+          return;
+        }
+        stopPeerHealthCheck();
+        networkState.update(s => ({ ...s, status: 'disconnected', peerId: null }));
+        if (autoReconnectEnabled) {
+          startReconnect();
+        } else {
+          console.log('[Network] Host 模式：不主动重连，等待 Guest 重连...');
+        }
+      });
+
+      startPeerHealthCheck();
+
+      console.log(`[Network] ${label}成功！peerId=${peerId} (attempt #${attempt})`);
+      networkState.update(s => ({ ...s, status: 'connected', peerId, waitingSince: null }));
+    });
+
+    // 启动无 peer 重试定时器
+    scheduleNoPeerRetry();
+
+  } catch (err) {
+    console.warn(`[Network] joinRoom 异常:`, err);
+    if (!timedOut.value && attempt < MAX_RETRIES) {
+      cleanupRoom();
+      const shuffled = [...RELAY_URLS].sort(() => Math.random() - 0.5);
+      setTimeout(() => {
+        if (!timedOut.value) {
+          trySingleConnect(roomCode, shuffled, attempt + 1, isReconnect);
+        }
+      }, 2000);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+//  重连
+// ─────────────────────────────────────────────
+
+function startReconnect() {
+  if (reconnecting || !currentRoomCode) return;
+  reconnecting = true;
+  connecting = false;
+  console.log('[Network] 开始自动重连...');
+
+  // 2s 延迟，给 WebRTC 短暂恢复时间
+  reconnectTimer = setTimeout(() => {
+    if (reconnecting && currentRoomCode) {
+      connectWithRetry(currentRoomCode, true);
+    }
+  }, 2000);
+}
+
+function connectWithRetry(roomCode: string, isReconnect: boolean) {
+  if (connecting) return;
+  connecting = true;
+
+  currentRoomCode = roomCode;
+
+  networkState.set({
+    status: 'signaling',
+    roomCode,
+    peerId: null,
+    waitingSince: null,
+  });
+
+  // 3s 后从 signaling → waiting_peer
   signalingTimer = setTimeout(() => {
     signalingTimer = null;
     networkState.update(s => {
       if (s.status === 'signaling') {
-        console.log('[Network] 信令阶段完成，进入 waiting_peer 阶段');
         return { ...s, status: 'waiting_peer', waitingSince: Date.now() };
       }
       return s;
     });
   }, SIGNALING_PHASE_MS);
 
-  // 30s 内未收到对手 → 超时
-  connectionTimeoutTimer = setTimeout(() => {
-    connectionTimeoutTimer = null;
-    networkState.update(s => {
-      if (s.status === 'signaling' || s.status === 'waiting_peer') {
-        console.warn('[Network] 连接超时（30s）');
-        return { ...s, status: 'timeout', waitingSince: null };
-      }
-      return s;
-    });
-    // 超时后清理 room，节省资源
-    room?.leave();
-    room = null;
-    sendFn = null;
-  }, CONNECTION_TIMEOUT_MS);
-
-  room.onPeerJoin((peerId: string) => {
-    clearConnectionTimers();
-    console.log(`[Network] 对手加入，P2P 通道建立 peerId=${peerId}`);
-    networkState.update(s => ({ ...s, status: 'connected', peerId, waitingSince: null }));
-  });
-
-  room.onPeerLeave((_peerId: string) => {
-    console.log('[Network] 对手离开，连接断开');
-    networkState.update(s => ({ ...s, status: 'disconnected', peerId: null }));
-  });
-
-  receive((msg: unknown, peerId: string) => {
-    messageHandlers.forEach(h => h(msg as GameMessage, peerId));
-  });
+  trySingleConnect(roomCode, [...RELAY_URLS], 1, isReconnect);
 }
 
-/** 发送消息给对手 */
+// ─────────────────────────────────────────────
+//  公开 API
+// ─────────────────────────────────────────────
+
+/** 加入（或创建）房间 */
+export function initRoom(roomCode: string): void {
+  reconnecting = false;
+  connectWithRetry(roomCode, false);
+}
+
+/** 发送消息给对手。sendFn 为 null 时记录 warning 并丢弃。 */
 export function sendMessage(msg: GameMessage): void {
-  sendFn?.(msg);
+  if (sendFn) {
+    sendFn(msg);
+  } else {
+    console.warn(`[Network] sendMessage 丢弃（sendFn 为空）: ${msg.type}`);
+  }
 }
 
-/** 离开当前房间，清理所有状态 */
+/** 发送任意数据（供 reliable channel 使用） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function sendRaw(data: any): void {
+  if (sendFn) {
+    sendFn(data);
+  } else {
+    // 连接建立前静默丢弃（reliable channel 的 ping 在 connected 后才启动）
+    console.debug('[Network] sendRaw 暂未就绪（连接建立后将恢复）');
+  }
+}
+
+/** 离开当前房间，清理所有资源 */
 export function leaveRoom(): void {
-  clearConnectionTimers();
-  room?.leave();
-  room = null;
+  reconnecting = false;
+  connecting = false;
+  currentRoomCode = null;
+  clearAllTimers();
+  stopPeerHealthCheck();
+  cleanupRoom();
   sendFn = null;
+  gameActionSetup = false;
   messageHandlers = [];
+  rawHandlers = [];
   networkState.set({ status: 'idle', roomCode: null, peerId: null, waitingSince: null });
 }
 
@@ -168,10 +419,6 @@ export function leaveRoom(): void {
 //  消息订阅
 // ─────────────────────────────────────────────
 
-/**
- * 订阅来自对手的消息。
- * @returns 取消订阅函数
- */
 export function onMessage(handler: MessageHandler): () => void {
   messageHandlers.push(handler);
   return () => {
@@ -179,36 +426,38 @@ export function onMessage(handler: MessageHandler): () => void {
   };
 }
 
+export function onRawMessage(handler: RawHandler): () => void {
+  rawHandlers.push(handler);
+  return () => {
+    rawHandlers = rawHandlers.filter(h => h !== handler);
+  };
+}
+
 // ─────────────────────────────────────────────
 //  手动连接模式支持接口
 // ─────────────────────────────────────────────
 
-/**
- * 允许手动 SDP 连接模式接管发送通道。
- * 调用后 sendMessage() 将通过外部提供的函数发送，而非 MQTT DataChannel。
- */
-export function overrideSendFn(fn: (msg: GameMessage) => void): void {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function overrideSendFn(fn: (data: any) => void): void {
   sendFn = fn;
 }
 
-/**
- * 将收到的消息派发给所有已注册的 handler。
- * 供手动连接模式在 DataChannel.onmessage 中调用，接入统一消息路由。
- */
 export function dispatchMessage(msg: GameMessage, peerId: string): void {
   messageHandlers.forEach(h => h(msg, peerId));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function dispatchRaw(data: any, peerId: string): void {
+  rawHandlers.forEach(h => h(data, peerId));
+  if (data && typeof data.type === 'string') {
+    messageHandlers.forEach(h => h(data as GameMessage, peerId));
+  }
 }
 
 // ─────────────────────────────────────────────
 //  URL 工具
 // ─────────────────────────────────────────────
 
-/**
- * 生成可分享的房间链接。
- * 自动适配：
- *   开发模式 → http://localhost:5173/?room=XXXXXX
- *   生产模式 → https://user.github.io/KCD2-Farkle/?room=XXXXXX
- */
 export function getRoomUrl(roomCode: string): string {
   const url = new URL(window.location.href);
   url.search = '';
@@ -217,15 +466,13 @@ export function getRoomUrl(roomCode: string): string {
   return url.toString();
 }
 
-/** 生成随机 6 位房间码（大写字母 + 数字，排除易混淆字符） */
 export function generateRoomCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 排除 0/O/1/I
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return Array.from(crypto.getRandomValues(new Uint8Array(6)))
     .map(b => chars[b % chars.length])
     .join('');
 }
 
-/** 从当前页面 URL 读取房间码 */
 export function getRoomCodeFromUrl(): string | null {
   return new URLSearchParams(window.location.search).get('room');
 }

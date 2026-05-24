@@ -3,6 +3,7 @@
   import { networkState } from '$lib/network/trystero';
   import { myRole, myName, opponentName, initMessageHandler, startGame } from '$lib/stores/gameStore';
   import { sendMessage } from '$lib/network/trystero';
+  import { PROTOCOL_VERSION } from '$lib/network/protocol';
   import type { GameConfig } from '$lib/game/types';
   import RulesConfig from './RulesConfig.svelte';
   import ManualConnect from './ManualConnect.svelte';
@@ -30,7 +31,7 @@
   }
 
   function handleStartGame(config: GameConfig) {
-    sendMessage({ type: 'player_ack', hostName: playerName });
+    sendMessage({ type: 'player_ack', hostName: playerName, protocolVersion: PROTOCOL_VERSION });
     startGame(config);
   }
 

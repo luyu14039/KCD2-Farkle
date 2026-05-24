@@ -1,5 +1,4 @@
-import { networkState, overrideSendFn, dispatchMessage } from './trystero';
-import type { GameMessage } from './protocol';
+import { networkState, overrideSendFn, dispatchRaw } from './trystero';
 
 // ─────────────────────────────────────────────
 //  ICE 服务器（中国可达优先）
@@ -117,12 +116,13 @@ function setupDataChannel(channel: RTCDataChannel): void {
   channel.onopen = () => {
     console.log('[ManualP2P] DataChannel 已打开，接管 trystero 消息通道');
 
-    // 接管 trystero 的发送函数
-    overrideSendFn((msg: GameMessage) => {
+    // 接管 trystero 的发送函数（接受任意可序列化数据，供 reliable channel 使用）
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    overrideSendFn((data: any) => {
       if (dc && dc.readyState === 'open') {
-        dc.send(JSON.stringify(msg));
+        dc.send(JSON.stringify(data));
       } else {
-        console.warn('[ManualP2P] DataChannel 未就绪，消息丢弃:', msg.type);
+        console.warn('[ManualP2P] DataChannel 未就绪，消息丢弃');
       }
     });
 
@@ -137,8 +137,8 @@ function setupDataChannel(channel: RTCDataChannel): void {
 
   channel.onmessage = (event: MessageEvent) => {
     try {
-      const msg = JSON.parse(event.data as string) as GameMessage;
-      dispatchMessage(msg, MANUAL_PEER_ID);
+      const data = JSON.parse(event.data as string);
+      dispatchRaw(data, MANUAL_PEER_ID);
     } catch {
       console.error('[ManualP2P] 无法解析消息:', event.data);
     }
