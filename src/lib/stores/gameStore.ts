@@ -517,7 +517,9 @@ export function onRollAnimationDone() {
       gameState.update(s => ({ ...s, phase: 'bust' as GamePhase }));
       showStatus('爆点！本回合得分清零！', 1500);
       setTimeout(() => triggerCommentary('bust', 2), 200);
-      setTimeout(() => endTurn(true), 1500);
+      if (isMyRoll) {
+        setTimeout(() => endTurn(true), 1500);
+      }
     } else {
       // 掷骰完成，现在必须选择骰子
       awaitingRoll.set(false);
@@ -525,7 +527,9 @@ export function onRollAnimationDone() {
   } else if ($s.phase === 'bust') {
     showStatus('爆点！本回合得分清零！', 1500);
     setTimeout(() => triggerCommentary('bust', 2), 200);
-    setTimeout(() => endTurn(true), 1500);
+    if (isMyRoll) {
+      setTimeout(() => endTurn(true), 1500);
+    }
   }
 }
 
