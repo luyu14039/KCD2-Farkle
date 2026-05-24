@@ -15,6 +15,7 @@ const APP_ID = 'kcd2-farkle-v2';
 const RELAY_URLS = [
   'wss://broker-cn.emqx.io:8084/mqtt',
   'wss://broker.emqx.io:8084/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt',
   'wss://mqtt.eclipseprojects.io:443/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
 ];
@@ -219,9 +220,8 @@ function trySingleConnect(roomCode: string, relayUrls: string[], attempt: number
         console.log(`[Network] ${label} ${NO_PEER_RETRY_MS / 1000}s 无 peer，重试 #${attempt + 1}...`);
         cleanupRoom();
         sendFn = null;
-        // 重连时保持相同 relay 顺序，确保双方走到同一 broker；
-        // 仅初始连接时打乱顺序以分散 MQTT 服务器负载
-        const nextRelays = isReconnect ? relayUrls : [...RELAY_URLS].sort(() => Math.random() - 0.5);
+        // 每次重试都随机打乱 relay 顺序，避免反复撞到不可达节点
+        const nextRelays = [...RELAY_URLS].sort(() => Math.random() - 0.5);
         // 随机延迟 2-4s，让双方不在同一瞬间重试（分散竞争窗口）
         const delay = 2000 + Math.random() * 2000;
         setTimeout(() => {

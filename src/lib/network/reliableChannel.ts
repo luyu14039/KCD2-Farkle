@@ -25,9 +25,9 @@ interface Envelope {
 // ── 配置 ────────────────────────────────────────
 
 const CRITICAL_TYPES = new Set(['bank_score', 'end_turn', 'game_state_sync', 'request_state_sync']);
-const ACK_TIMEOUT_MS = 1500;
-const MAX_RETRIES = 3;
-const PING_INTERVAL_MS = 10_000;
+const ACK_TIMEOUT_MS = 3000;
+const MAX_RETRIES = 5;
+const PING_INTERVAL_MS = 8_000;
 
 // ── 类型 ────────────────────────────────────────
 
@@ -143,28 +143,33 @@ export function createReliableChannel(config: ChannelConfig) {
       return;
     }
 
-    // 2) 游戏消息：去重
-    if (receivedSeqs.has(seq)) return;
-    receivedSeqs.add(seq);
+    // 2) 游戏消息：去重（但关键消息的 ACK 必须在去重之前回复，否则
+    //    一次 ACK 丢失会导致发送方所有重传都收不到确认而被误丢弃）
+    const isDuplicate = receivedSeqs.has(seq);
+    if (!isDuplicate) {
+      receivedSeqs.add(seq);
 
-    // 序列号跳跃 → 可能丢包
-    if (lastReceivedSeq > 0 && seq > lastReceivedSeq + 1) {
-      console.warn(`[Reliable] 检测到丢包: lastSeq=${lastReceivedSeq} currentSeq=${seq} gap=${seq - lastReceivedSeq - 1}`);
-    }
-    if (seq > lastReceivedSeq) {
-      lastReceivedSeq = seq;
+      // 序列号跳跃 → 可能丢包（仅新消息时检测）
+      if (lastReceivedSeq > 0 && seq > lastReceivedSeq + 1) {
+        console.warn(`[Reliable] 检测到丢包: lastSeq=${lastReceivedSeq} currentSeq=${seq} gap=${seq - lastReceivedSeq - 1}`);
+      }
+      if (seq > lastReceivedSeq) {
+        lastReceivedSeq = seq;
+      }
+
+      // 清理旧序列号（防止 Set 无限增长）
+      if (receivedSeqs.size > 1000) {
+        const toRemove = Array.from(receivedSeqs).filter(s => s < seq - 500);
+        toRemove.forEach(s => receivedSeqs.delete(s));
+      }
     }
 
-    // 清理旧序列号（防止 Set 无限增长）
-    if (receivedSeqs.size > 1000) {
-      const toRemove = Array.from(receivedSeqs).filter(s => s < seq - 500);
-      toRemove.forEach(s => receivedSeqs.delete(s));
-    }
-
-    // 3) 关键消息：自动确认
+    // 3) 关键消息：自动确认（即使是重传也回复 ACK）
     if (env._m && CRITICAL_TYPES.has(env._m.type)) {
       sendRaw({ _s: nextSeq(), _t: 'ack', _r: seq });
     }
+
+    if (isDuplicate) return;
 
     // 4) 分发给应用层
     if (env._m) {
