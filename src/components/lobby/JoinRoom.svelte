@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { initRoom, networkState } from '$lib/network/trystero';
   import { sendMessage } from '$lib/network/trystero';
+  import { PROTOCOL_VERSION } from '$lib/network/protocol';
   import { myRole, myName, initMessageHandler, appView } from '$lib/stores/gameStore';
   import ManualConnect from './ManualConnect.svelte';
 
@@ -35,7 +36,7 @@
   // 连接成功后自动发送 hello
   $effect(() => {
     if (status === 'connected' && joined) {
-      sendMessage({ type: 'player_hello', name: playerName });
+      sendMessage({ type: 'player_hello', name: playerName, protocolVersion: PROTOCOL_VERSION });
     }
   });
 

@@ -5,9 +5,39 @@ import type {
 import { DEFAULT_CONFIG } from '$lib/game/types';
 import { createDice, rollDice, isBust, isHotDice, resetDiceForHotDice, keepDice, evaluateSelection } from '$lib/game/dice';
 import { getSpecialDice } from '$lib/game/diceRegistry';
-import { sendMessage, onMessage, leaveRoom, networkState } from '$lib/network/trystero';
+import { sendMessage, sendRaw, onRawMessage, leaveRoom, networkState, setAutoReconnect } from '$lib/network/trystero';
 import { createCommitment, verifyCommitment, generateSeed } from '$lib/network/commitReveal';
 import type { GameMessage, RpsChoice } from '$lib/network/protocol';
+import { PROTOCOL_VERSION } from '$lib/network/protocol';
+import { createReliableChannel } from '$lib/network/reliableChannel';
+
+// ─────────────────────────────────────────────
+//  可靠传输通道
+// ─────────────────────────────────────────────
+
+/** 计算游戏状态简易哈希（用于心跳校验双端同步） */
+function computeStateHash(state: GameState): string {
+  const key = `${state.turnScore}|${state.players[0].totalScore}|${state.players[1].totalScore}|${state.currentPlayerIndex}|${state.phase}`;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash.toString(36);
+}
+
+/** 可靠通道实例（模块级单例） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let reliableChannel: ReturnType<typeof createReliableChannel> | null = null;
+
+/** 通过可靠通道发送游戏消息。未初始化时回退到原始 trystero 发送。 */
+function sendGameMessage(msg: GameMessage): void {
+  if (reliableChannel) {
+    reliableChannel.send(msg);
+  } else {
+    sendMessage(msg);
+  }
+}
 
 // ─────────────────────────────────────────────
 //  应用级视图状态（非游戏逻辑状态）
@@ -55,32 +85,48 @@ function stopReconnectCountdown() {
 
 // 订阅网络状态变化
 // 注意：模块加载时立即订阅，无需手动调用
+/** 重连后请求状态同步的定时器 */
+let requestSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
 networkState.subscribe(ns => {
   const currentView = get(appView);
+
+  if (ns.status === 'connected') {
+    // 连接建立后启动心跳
+    reliableChannel?.startHeartbeat();
+
+    if (get(isOpponentDisconnected)) {
+      console.log('[GameStore] 对手已重连！取消冻结');
+      stopReconnectCountdown();
+      isOpponentDisconnected.set(false);
+
+      // 谁在游戏中谁就推送状态快照（不限于 host）
+      const $s = get(gameState);
+      const $awaitingRoll = get(awaitingRoll);
+      const $role = get(myRole);
+      console.log(`[GameStore] 重连检测，作为 ${$role} 发送 game_state_sync`);
+      sendGameMessage({
+        type: 'game_state_sync',
+        state: $s,
+        yourRole: $role === 'host' ? 'guest' : 'host',
+        awaitingRoll: $awaitingRoll,
+      });
+      if ($role !== 'host') {
+        // 客人端：如果 3s 内未收到 game_state_sync，主动请求
+        if (requestSyncTimer !== null) clearTimeout(requestSyncTimer);
+        requestSyncTimer = setTimeout(() => {
+          console.warn('[GameStore] 重连后未收到同步，主动请求 game_state_sync');
+          sendGameMessage({ type: 'request_state_sync' });
+          requestSyncTimer = null;
+        }, 3000);
+      }
+    }
+  }
 
   if (ns.status === 'disconnected' && currentView === 'game') {
     console.warn('[GameStore] 对手断开，冻结游戏操作，等待重连...');
     isOpponentDisconnected.set(true);
     startReconnectCountdown(60);
-  }
-
-  if (ns.status === 'connected' && get(isOpponentDisconnected)) {
-    console.log('[GameStore] 对手已重连！取消冻结');
-    stopReconnectCountdown();
-    isOpponentDisconnected.set(false);
-
-    // 如果本端是房主，立即推送状态快照与对方同步
-    if (get(myRole) === 'host') {
-      const $s = get(gameState);
-      const $awaitingRoll = get(awaitingRoll);
-      console.log('[GameStore] 作为房主，发送 game_state_sync');
-      sendMessage({
-        type: 'game_state_sync',
-        state: $s,
-        yourRole: 'guest',
-        awaitingRoll: $awaitingRoll,
-      });
-    }
   }
 });
 
@@ -374,8 +420,10 @@ function showStatus(msg: string, durationMs = 2000) {
 
 /** 房主发起游戏，广播配置 */
 export function startGame(config: GameConfig) {
+  // Host 不主动重连，原地等待 Guest 重连，避免双方同时重连的竞争条件
+  setAutoReconnect(false);
   const state = createInitialState(config);
-  sendMessage({ type: 'game_start', config });
+  sendGameMessage({ type: 'game_start', config });
 
   if (config.specialDiceCount === 0) {
     // 不使用特殊骰子：跳过选骰，直接猜拳决定先后手
@@ -399,6 +447,9 @@ export function startGame(config: GameConfig) {
 
 /** 掷骰（含 commit-reveal 流程） */
 let isRollingInProgress = false;
+
+/** 当前掷骰是否由本端发起（true=local roll, false=remote roll_reveal） */
+let isMyRoll = false;
 export async function performRoll() {
   if (isRollingInProgress) return;
   const $state = get(gameState);
@@ -412,12 +463,13 @@ export async function performRoll() {
     console.log(`[Farkle] performRoll: seed=${seed}, phase=${get(gameState).phase}, turnScore=${get(gameState).turnScore}`);
 
     // Phase 1: 发送承诺
-    sendMessage({ type: 'roll_commit', commitment });
+    sendGameMessage({ type: 'roll_commit', commitment });
 
     // 简化流程：对于 MVP，直接发送揭示（完整实现需等对手确认）
-    sendMessage({ type: 'roll_reveal', seed, nonce });
+    sendGameMessage({ type: 'roll_reveal', seed, nonce });
 
-    // 本地掷骰
+    // 标记为本端掷骰（爆点时只有掷骰方才发送 end_turn，避免双方都发）
+    isMyRoll = true;
     executeRoll(seed);
   } finally {
     isRollingInProgress = false;
@@ -506,7 +558,7 @@ export function confirmSelection() {
   console.log(`[Farkle] confirmSelection: ids=${JSON.stringify($ids)}, +${score}, turnScore: ${$state.turnScore} → ${newTurnScoreAfter}`);
 
   // 广播选择
-  sendMessage({ type: 'select_dice', dieIds: $ids, turnScore: newTurnScoreAfter });
+  sendGameMessage({ type: 'select_dice', dieIds: $ids, turnScore: newTurnScoreAfter });
 
   const prevTurnScore = $state.turnScore;
 
@@ -571,7 +623,7 @@ export function confirmDiceSelection(picks: string[]) {
   }));
 
   diceSelection.update(ds => ({ ...ds, myPicks: picks, myConfirmed: true }));
-  sendMessage({ type: 'dice_confirm', diceIds: picks });
+  sendGameMessage({ type: 'dice_confirm', diceIds: picks });
 
   // 检查双方是否都已确认
   const $ds = get(diceSelection);
@@ -597,7 +649,7 @@ export function makeDraftPick(diceId: string) {
 
   if ($ds.draftTurn !== $role) return; // 不是你的回合
 
-  sendMessage({ type: 'draft_pick', diceId });
+  sendGameMessage({ type: 'draft_pick', diceId });
   applyDraftPick(diceId, $role);
 }
 
@@ -678,23 +730,24 @@ function resetRpsState() {
 export function bankScore() {
   const $initial = get(gameState);
   const bankedAmount = $initial.turnScore;
+  const newTotal = $initial.players[$initial.currentPlayerIndex].totalScore + bankedAmount;
 
   console.log(`[Farkle] bankScore: 玩家${$initial.players[$initial.currentPlayerIndex].id} 结算 ${bankedAmount}分`);
-  sendMessage({ type: 'bank_score' });
+  sendGameMessage({ type: 'bank_score', amount: bankedAmount, newTotal });
 
   gameState.update($s => {
     const player = $s.players[$s.currentPlayerIndex];
-    const newTotal = player.totalScore + $s.turnScore;
+    const newTotal2 = player.totalScore + $s.turnScore;
 
     const newPlayers = [...$s.players] as [typeof $s.players[0], typeof $s.players[1]];
     newPlayers[$s.currentPlayerIndex] = {
       ...player,
-      totalScore: newTotal,
+      totalScore: newTotal2,
       turnScore: 0,
     };
 
     // 检测胜利
-    if (newTotal >= $s.config.targetScore) {
+    if (newTotal2 >= $s.config.targetScore) {
       return {
         ...$s,
         players: newPlayers,
@@ -743,9 +796,14 @@ export function bankScore() {
 /** 结束回合（爆点或放弃），不加分 */
 export function endTurn(isBustTurn = false) {
   const $s = get(gameState);
-  console.log(`[Farkle] endTurn: isBust=${isBustTurn}, 当前玩家=${$s.players[$s.currentPlayerIndex].id}, phase=${$s.phase}`);
-  if (!isBustTurn) {
-    sendMessage({ type: 'end_turn' });
+  console.log(`[Farkle] endTurn: isBust=${isBustTurn}, 当前玩家=${$s.players[$s.currentPlayerIndex].id}, phase=${$s.phase}, isMyRoll=${isMyRoll}`);
+  // 爆点时只有掷骰方发送 end_turn；接收 roll_reveal 的一方检测到爆点后只切换本地回合
+  if (!isBustTurn || isMyRoll) {
+    sendGameMessage({
+      type: 'end_turn',
+      reason: isBustTurn ? 'bust' : 'fold',
+      finalTurnScore: isBustTurn ? 0 : $s.turnScore,
+    });
   }
 
   gameState.update($s => {
@@ -777,6 +835,13 @@ function _resetToLobby() {
   stopIdleCommentary();
   stopReconnectCountdown();
   isOpponentDisconnected.set(false);
+  setAutoReconnect(true); // 重置为默认（允许重连）
+  if (requestSyncTimer !== null) {
+    clearTimeout(requestSyncTimer);
+    requestSyncTimer = null;
+  }
+  reliableChannel?.destroy();
+  reliableChannel = null;
   leaveRoom();
   gameState.set(createInitialState());
   diceSelection.set(createInitialSelection());
@@ -787,6 +852,7 @@ function _resetToLobby() {
   myRpsCommitment = null;
   theirRpsCommitment = null;
   isRollingInProgress = false;
+  isMyRoll = false;
   appView.set('lobby');
 }
 
@@ -795,7 +861,7 @@ function _resetToLobby() {
  * 客人端收到 rematch_lobby 消息后会自动调用 _resetToLobby()。
  */
 export function rematchLobby() {
-  sendMessage({ type: 'rematch_lobby' });
+  sendGameMessage({ type: 'rematch_lobby' });
   // 延迟 150ms 确保消息在断开连接前已发出
   setTimeout(() => _resetToLobby(), 150);
 }
@@ -818,12 +884,12 @@ export async function submitRpsChoice(choice: RpsChoice) {
   const { commitment, nonce } = await createCommitment(choice);
   myRpsCommitment = { commitment, nonce };
 
-  sendMessage({ type: 'rps_commit', commitment });
+  sendGameMessage({ type: 'rps_commit', commitment });
   rpsState.set({ step: 'waiting', myChoice: choice });
 
   // 如果对手已经发过承诺，双方互相揭示
   if (theirRpsCommitment) {
-    sendMessage({ type: 'rps_reveal', choice, nonce });
+    sendGameMessage({ type: 'rps_reveal', choice, nonce });
   }
 }
 
@@ -842,24 +908,76 @@ function resolveRps(mine: RpsChoice, theirs: RpsChoice): 'me' | 'them' | 'draw' 
 // ─────────────────────────────────────────────
 
 export function initMessageHandler(): () => void {
-  return onMessage((msg: GameMessage, _peerId: string) => {
+  // 创建可靠传输通道
+  reliableChannel = createReliableChannel({
+    sendRaw: (env) => sendRaw(env),
+    onRawMessage: (handler) => onRawMessage(handler),
+    getStateHash: () => computeStateHash(get(gameState)),
+    onStateMismatch: () => {
+      // 状态哈希不匹配 → 谁在游戏中谁推送同步
+      setTimeout(() => {
+        if (get(appView) === 'game') {
+          const role = get(myRole);
+          console.warn(`[GameStore] 状态不匹配，作为 ${role} 主动推送同步`);
+          sendGameMessage({
+            type: 'game_state_sync',
+            state: get(gameState),
+            yourRole: role === 'host' ? 'guest' : 'host',
+            awaitingRoll: get(awaitingRoll),
+          });
+        }
+      }, 100);
+    },
+  });
+
+  const unsub = reliableChannel.onReceive((msg: GameMessage, _peerId: string) => {
     switch (msg.type) {
       // ── 握手 ──
-      case 'player_hello':
+      case 'player_hello': {
+        // 协议版本检查
+        if (msg.protocolVersion !== PROTOCOL_VERSION) {
+          console.error(`[GameStore] 协议版本不匹配！本地=${PROTOCOL_VERSION} 远端=${msg.protocolVersion}`);
+          showStatus('协议版本不匹配，请双方刷新页面后重试！', 5000);
+          return;
+        }
         opponentName.set(msg.name);
-        const $myName = get(myName);
-        sendMessage({ type: 'player_ack', hostName: $myName });
-        break;
+        const $myName2 = get(myName);
+        sendGameMessage({ type: 'player_ack', hostName: $myName2, protocolVersion: PROTOCOL_VERSION });
 
-      case 'player_ack':
+        // 如果游戏正在进行中，发送状态同步（处理重连场景）
+        // 谁在游戏中谁就是权威，不限于 host
+        const $appView = get(appView);
+        if ($appView === 'game') {
+          const $role = get(myRole);
+          console.log(`[GameStore] 游戏中收到 player_hello，作为 ${$role} 发送 game_state_sync`);
+          const $s = get(gameState);
+          const $awaitingRoll = get(awaitingRoll);
+          sendGameMessage({
+            type: 'game_state_sync',
+            state: $s,
+            yourRole: $role === 'host' ? 'guest' : 'host',
+            awaitingRoll: $awaitingRoll,
+          });
+        }
+        break;
+      }
+
+      case 'player_ack': {
+        if (msg.protocolVersion !== PROTOCOL_VERSION) {
+          console.error(`[GameStore] 协议版本不匹配！本地=${PROTOCOL_VERSION} 远端=${msg.protocolVersion}`);
+          showStatus('协议版本不匹配，请双方刷新页面后重试！', 5000);
+          return;
+        }
         opponentName.set(msg.hostName);
         break;
+      }
 
       // ── 游戏开始 ──
       case 'game_start': {
+        // Guest 负责主动重连
+        setAutoReconnect(true);
         const state = createInitialState(msg.config);
         if (msg.config.specialDiceCount === 0) {
-          // 不使用特殊骰子：跳过选骰，直接猜拳
           gameState.set(state);
           rpsPurpose.set('game_start');
           appView.set('rps');
@@ -880,11 +998,10 @@ export function initMessageHandler(): () => void {
       // ── 猜拳 ──
       case 'rps_commit':
         theirRpsCommitment = msg.commitment;
-        // 如果我已经选择了，立即揭示
         if (myRpsCommitment) {
           const $rps = get(rpsState);
           if ($rps.step === 'waiting') {
-            sendMessage({ type: 'rps_reveal', choice: $rps.myChoice, nonce: myRpsCommitment.nonce });
+            sendGameMessage({ type: 'rps_reveal', choice: $rps.myChoice, nonce: myRpsCommitment.nonce });
           }
         }
         break;
@@ -893,7 +1010,6 @@ export function initMessageHandler(): () => void {
         const $rps = get(rpsState);
         if ($rps.step !== 'waiting') break;
 
-        // 验证承诺
         if (theirRpsCommitment) {
           verifyCommitment(theirRpsCommitment, msg.choice, msg.nonce).then(valid => {
             if (!valid) {
@@ -904,7 +1020,6 @@ export function initMessageHandler(): () => void {
             const winner = resolveRps($rps.myChoice, msg.choice);
             rpsState.set({ step: 'result', myChoice: $rps.myChoice, theirChoice: msg.choice, winner });
 
-            // 根据结果决定先手/抓取顺序
             setTimeout(() => {
               if (winner === 'draw') {
                 resetRpsState();
@@ -912,12 +1027,10 @@ export function initMessageHandler(): () => void {
               } else {
                 const purpose = get(rpsPurpose);
                 if (purpose === 'draft_order') {
-                  // 轮抓猜拳结束 → 进入轮抓
                   const firstPicker: PlayerId = winner === 'me' ? get(myRole) : (get(myRole) === 'host' ? 'guest' : 'host');
                   resetRpsState();
                   startDraft(firstPicker);
                 } else {
-                  // 正常猜拳 → 进入游戏
                   const firstIndex = (winner === 'me'
                     ? (get(myRole) === 'host' ? 0 : 1)
                     : (get(myRole) === 'host' ? 1 : 0)) as 0 | 1;
@@ -942,32 +1055,25 @@ export function initMessageHandler(): () => void {
 
       // ── 掷骰 ──
       case 'roll_commit':
-        // MVP: 收到承诺后即等待 reveal
         break;
 
       case 'roll_reveal': {
         const $preRoll = get(gameState);
         console.log(`[Farkle P2P] roll_reveal 收到: seed=${msg.seed}, 当前phase=${$preRoll.phase}, 已锁定=${$preRoll.dice.filter(d => d.kept).length}枚`);
+        isMyRoll = false; // 对手的掷骰，爆点时不发送 end_turn
         executeRoll(msg.seed);
         break;
       }
 
       // ── 回合操作 ──
       case 'select_dice': {
-        // 对手锁定骰子 — 更新本地状态，并用发送方的 turnScore 强同步积分
         const $preSel = get(gameState);
         console.log(`[Farkle P2P] select_dice 收到: dieIds=${JSON.stringify(msg.dieIds)}, 权威turnScore=${msg.turnScore}, 本地turnScore=${$preSel.turnScore}`);
 
         gameState.update($s => {
           const updated = keepDice($s, msg.dieIds);
-          // 用发送方的 turnScore 作为权威值，防止双端计算偏差
           const synced = { ...updated, turnScore: msg.turnScore };
 
-          // ─── 满盘(Hot Dice)修复 ─────────────────────────────────
-          // 对手将全部 6 枚骰子锁定后，本地骰子也必须重置为未锁定状态。
-          // 若不重置，下一条 roll_reveal 会在「已全部 kept」的骰子上调用
-          // rollDice()，导致无骰子可掷、isBust([]) 误判为爆点，引发
-          // 回合顺序错乱与双端积分不同步。
           if (isHotDice(updated.dice)) {
             console.log('[Farkle P2P] 检测到对手满盘(Hot Dice)！重置骰子，等待对手重投');
             return { ...synced, dice: resetDiceForHotDice(updated.dice), phase: 'hot_dice' as GamePhase };
@@ -978,39 +1084,60 @@ export function initMessageHandler(): () => void {
         break;
       }
 
-      case 'bank_score':
-        // 对手结算
+      case 'bank_score': {
+        // 对手结算 — 使用消息中的权威值
+        console.log(`[Farkle P2P] bank_score 收到: amount=${msg.amount}, newTotal=${msg.newTotal}`);
         gameState.update($s => {
           const player = $s.players[$s.currentPlayerIndex];
-          const newTotal = player.totalScore + $s.turnScore;
           const newPlayers = [...$s.players] as [typeof $s.players[0], typeof $s.players[1]];
-          newPlayers[$s.currentPlayerIndex] = { ...player, totalScore: newTotal, turnScore: 0 };
+          newPlayers[$s.currentPlayerIndex] = {
+            ...player,
+            totalScore: msg.newTotal,
+            turnScore: 0,
+          };
 
-          if (newTotal >= $s.config.targetScore) {
+          if (msg.newTotal >= $s.config.targetScore) {
             return { ...$s, players: newPlayers, phase: 'game_over' as GamePhase, winner: player.id, turnScore: 0 };
           }
 
           const nextIndex = ($s.currentPlayerIndex === 0 ? 1 : 0) as 0 | 1;
           const nextPlayerDice = nextIndex === 0 ? $s.hostDice : $s.guestDice;
-          return { ...$s, players: newPlayers, currentPlayerIndex: nextIndex, dice: createDice(nextPlayerDice), turnScore: 0, rollCount: 0, phase: 'selecting' as GamePhase };
+          return {
+            ...$s,
+            players: newPlayers,
+            currentPlayerIndex: nextIndex,
+            dice: createDice(nextPlayerDice),
+            turnScore: 0,
+            rollCount: 0,
+            phase: 'selecting' as GamePhase,
+          };
         });
         selectedDieIds.set([]);
         awaitingRoll.set(true);
         break;
+      }
 
-      case 'end_turn':
+      case 'end_turn': {
+        console.log(`[Farkle P2P] end_turn 收到: reason=${msg.reason}, finalTurnScore=${msg.finalTurnScore}`);
         gameState.update($s => {
           const nextIndex = ($s.currentPlayerIndex === 0 ? 1 : 0) as 0 | 1;
           const nextPlayerDice = nextIndex === 0 ? $s.hostDice : $s.guestDice;
-          return { ...$s, currentPlayerIndex: nextIndex, dice: createDice(nextPlayerDice), turnScore: 0, rollCount: 0, phase: 'selecting' as GamePhase };
+          return {
+            ...$s,
+            currentPlayerIndex: nextIndex,
+            dice: createDice(nextPlayerDice),
+            turnScore: 0,
+            rollCount: 0,
+            phase: 'selecting' as GamePhase,
+          };
         });
         selectedDieIds.set([]);
         awaitingRoll.set(true);
         break;
+      }
 
       // ── 骰子选择 ──
       case 'dice_confirm': {
-        // 对手确认了自由模式选择
         const opRole: PlayerId = get(myRole) === 'host' ? 'guest' : 'host';
         gameState.update($s => ({
           ...$s,
@@ -1027,26 +1154,57 @@ export function initMessageHandler(): () => void {
       }
 
       case 'draft_pick': {
-        // 对手在轮抓中选了一枚骰子
         const opponentRole: PlayerId = get(myRole) === 'host' ? 'guest' : 'host';
         applyDraftPick(msg.diceId, opponentRole);
         break;
       }
 
       case 'rematch_lobby':
-        // 房主已广播返回大厅，客人端同步重置
         _resetToLobby();
         break;
 
       case 'game_state_sync':
-        // 断线重连后，收到房主推送的完整状态快照
         console.log('[GameStore] 收到 game_state_sync，恢复游戏状态');
+        // 取消待处理的同步请求定时器
+        if (requestSyncTimer !== null) {
+          clearTimeout(requestSyncTimer);
+          requestSyncTimer = null;
+        }
         myRole.set(msg.yourRole);
         gameState.set(msg.state);
         awaitingRoll.set(msg.awaitingRoll);
         selectedDieIds.set([]);
         appView.set('game');
         break;
+
+      case 'request_state_sync': {
+        // 对端重连后主动请求状态同步 → 谁在游戏中谁响应
+        const $appView = get(appView);
+        if ($appView === 'game') {
+          const $role = get(myRole);
+          console.log(`[GameStore] 收到 request_state_sync，作为 ${$role} 发送 game_state_sync`);
+          const $s = get(gameState);
+          const $ar = get(awaitingRoll);
+          sendGameMessage({
+            type: 'game_state_sync',
+            state: $s,
+            yourRole: $role === 'host' ? 'guest' : 'host',
+            awaitingRoll: $ar,
+          });
+        }
+        break;
+      }
+
+      default:
+        // ping / pong / ack 由 reliable channel 内部处理，不会到达此处
+        break;
     }
   });
+
+  // 返回取消订阅函数
+  return () => {
+    unsub();
+    reliableChannel?.destroy();
+    reliableChannel = null;
+  };
 }
