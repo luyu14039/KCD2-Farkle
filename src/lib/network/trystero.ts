@@ -1,6 +1,7 @@
 import { joinRoom } from '@trystero-p2p/mqtt';
 import { writable } from 'svelte/store';
 import type { GameMessage } from './protocol';
+import type { PlayerId } from '../game/types';
 
 // ─────────────────────────────────────────────
 //  配置
@@ -19,6 +20,25 @@ const RELAY_URLS = [
   'wss://mqtt.eclipseprojects.io:443/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
 ];
+
+const ROOM_ROLE_KEY_PREFIX = 'kcd2-farkle-room-role:';
+
+export function rememberRoomRole(roomCode: string, role: PlayerId): void {
+  try {
+    localStorage.setItem(`${ROOM_ROLE_KEY_PREFIX}${roomCode.toUpperCase()}`, role);
+  } catch {
+    // localStorage may be unavailable in private or restricted contexts.
+  }
+}
+
+export function getRememberedRoomRole(roomCode: string): PlayerId | null {
+  try {
+    const value = localStorage.getItem(`${ROOM_ROLE_KEY_PREFIX}${roomCode.toUpperCase()}`);
+    return value === 'host' || value === 'guest' ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────
 //  类型

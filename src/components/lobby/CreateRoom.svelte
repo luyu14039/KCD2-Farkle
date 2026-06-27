@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { generateRoomCode, getRoomUrl, initRoom } from '$lib/network/trystero';
+  import { generateRoomCode, getRoomUrl, initRoom, rememberRoomRole } from '$lib/network/trystero';
   import { networkState } from '$lib/network/trystero';
   import { myRole, myName, opponentName, initMessageHandler, startGame } from '$lib/stores/gameStore';
   import { sendMessage } from '$lib/network/trystero';
@@ -19,6 +19,7 @@
     roomCode = generateRoomCode();
     shareUrl = getRoomUrl(roomCode);
     myRole.set('host');
+    rememberRoomRole(roomCode, 'host');
     myName.set(playerName);
     initRoom(roomCode);
     initMessageHandler();

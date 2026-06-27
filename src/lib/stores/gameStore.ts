@@ -955,14 +955,17 @@ export function initMessageHandler(): () => void {
         sendGameMessage({ type: 'player_ack', hostName: $myName2, protocolVersion: PROTOCOL_VERSION });
 
         const $appView = get(appView);
-        if ($appView === 'game' && get(myRole) === 'host') {
-          console.log('[GameStore] 游戏中收到 player_hello，host 发送 game_state_sync');
+        const $role = get(myRole);
+        const shouldRestoreReturningHost = $role === 'guest' && msg.role === 'host';
+        if ($appView === 'game' && ($role === 'host' || shouldRestoreReturningHost)) {
+          const targetRole: PlayerId = shouldRestoreReturningHost ? 'host' : 'guest';
+          console.log(`[GameStore] 游戏中收到 player_hello，发送 game_state_sync 给 ${targetRole}`);
           const $s = get(gameState);
           const $awaitingRoll = get(awaitingRoll);
           sendGameMessage({
             type: 'game_state_sync',
             state: $s,
-            yourRole: 'guest',
+            yourRole: targetRole,
             awaitingRoll: $awaitingRoll,
           });
         }
@@ -1191,6 +1194,7 @@ export function initMessageHandler(): () => void {
           }
         }
         myRole.set(msg.yourRole);
+        setAutoReconnect(msg.yourRole !== 'host');
         gameState.set(msg.state);
         awaitingRoll.set(msg.awaitingRoll);
         selectedDieIds.set([]);

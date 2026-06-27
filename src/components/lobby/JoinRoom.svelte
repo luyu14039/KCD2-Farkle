@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { initRoom, networkState } from '$lib/network/trystero';
+  import { getRememberedRoomRole, initRoom, networkState, rememberRoomRole, setAutoReconnect } from '$lib/network/trystero';
   import { sendMessage } from '$lib/network/trystero';
   import { PROTOCOL_VERSION } from '$lib/network/protocol';
   import { myRole, myName, initMessageHandler, appView } from '$lib/stores/gameStore';
@@ -26,9 +26,13 @@
 
   function handleJoin() {
     if (!roomCode.trim()) return;
-    myRole.set('guest');
+    const normalizedRoomCode = roomCode.trim().toUpperCase();
+    const role = getRememberedRoomRole(normalizedRoomCode) ?? 'guest';
+    myRole.set(role);
+    rememberRoomRole(normalizedRoomCode, role);
+    setAutoReconnect(role !== 'host');
     myName.set(playerName);
-    initRoom(roomCode.trim().toUpperCase());
+    initRoom(normalizedRoomCode);
     initMessageHandler();
     joined = true;
   }
@@ -36,7 +40,8 @@
   // 连接成功后自动发送 hello
   $effect(() => {
     if (status === 'connected' && joined) {
-      sendMessage({ type: 'player_hello', name: playerName, protocolVersion: PROTOCOL_VERSION });
+      const role = getRememberedRoomRole(roomCode.trim().toUpperCase()) ?? 'guest';
+      sendMessage({ type: 'player_hello', name: playerName, protocolVersion: PROTOCOL_VERSION, role });
     }
   });
 

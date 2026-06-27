@@ -49,7 +49,7 @@ export type GameMessage =
 
   // ── 连接握手 ──────────────────────────────────
   /** 加入方接入后发送，携带自己的显示名和协议版本 */
-  | { type: 'player_hello'; name: string; protocolVersion: number }
+  | { type: 'player_hello'; name: string; protocolVersion: number; role?: PlayerId }
   /** 房主回应，确认双方身份和协议版本 */
   | { type: 'player_ack'; hostName: string; protocolVersion: number }
 
