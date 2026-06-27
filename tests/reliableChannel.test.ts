@@ -43,12 +43,14 @@ describe('reliableChannel', () => {
   });
 
   function createChannel() {
-    return createReliableChannel({
+    const channel = createReliableChannel({
       sendRaw: transport.sendRaw,
       onRawMessage: transport.onRawMessage,
       getStateHash: () => stateHash,
       onStateMismatch: () => { mismatchCount++; },
     });
+    channel.setTransportOnline(true);
+    return channel;
   }
 
   describe('message send/receive', () => {
@@ -166,6 +168,25 @@ describe('reliableChannel', () => {
       ch.destroy();
     });
 
+    it('pauses retries while offline and flushes pending after reconnect', async () => {
+      vi.useFakeTimers();
+      const ch = createChannel();
+
+      ch.send({ type: 'bank_score', amount: 500, newTotal: 900 });
+      expect(transport.sentMessages).toHaveLength(1);
+
+      ch.setTransportOnline(false);
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(transport.sentMessages).toHaveLength(1);
+
+      ch.setTransportOnline(true);
+      expect(transport.sentMessages).toHaveLength(2);
+      expect(transport.sentMessages[1]._s).toBe(1);
+
+      vi.useRealTimers();
+      ch.destroy();
+    });
+
     it('auto-acks received critical messages', () => {
       const ch = createChannel();
       const received: GameMessage[] = [];
@@ -190,7 +211,7 @@ describe('reliableChannel', () => {
 
       transport.receiveRaw({
         _s: 10,
-        _m: { type: 'player_ack', hostName: 'Host', protocolVersion: 2 },
+        _m: { type: 'roll_commit', commitment: 'abc123' },
       });
 
       const acks = transport.sentMessages.filter((m: any) => m._t === 'ack');

@@ -5,7 +5,7 @@ import type {
 import { DEFAULT_CONFIG } from '$lib/game/types';
 import { createDice, rollDice, isBust, isHotDice, resetDiceForHotDice, keepDice, evaluateSelection } from '$lib/game/dice';
 import { getSpecialDice } from '$lib/game/diceRegistry';
-import { sendMessage, sendRaw, onRawMessage, leaveRoom, networkState, setAutoReconnect } from '$lib/network/trystero';
+import { sendMessage, sendRaw, onRawMessage, leaveRoom, networkState, setAutoReconnect, rememberRoomRole } from '$lib/network/trystero';
 import { createCommitment, verifyCommitment, generateSeed } from '$lib/network/commitReveal';
 import type { GameMessage, RpsChoice } from '$lib/network/protocol';
 import { PROTOCOL_VERSION } from '$lib/network/protocol';
@@ -39,6 +39,10 @@ function sendGameMessage(msg: GameMessage): void {
   }
 }
 
+export function sendReliableGameMessage(msg: GameMessage): void {
+  sendGameMessage(msg);
+}
+
 // ─────────────────────────────────────────────
 //  应用级视图状态（非游戏逻辑状态）
 // ─────────────────────────────────────────────
@@ -62,6 +66,7 @@ export const reconnectCountdown = writable<number | null>(null);
 let reconnectCountdownTimer: ReturnType<typeof setInterval> | null = null;
 
 function startReconnectCountdown(seconds = 60) {
+  stopReconnectCountdown();
   reconnectCountdown.set(seconds);
   reconnectCountdownTimer = setInterval(() => {
     reconnectCountdown.update(n => {
@@ -90,6 +95,7 @@ let requestSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 networkState.subscribe(ns => {
   const currentView = get(appView);
+  reliableChannel?.setTransportOnline(ns.status === 'connected');
 
   if (ns.status === 'connected') {
     // 连接建立后启动心跳
@@ -468,6 +474,7 @@ let isMyRoll = false;
 export async function performRoll() {
   if (isRollingInProgress) return;
   const $state = get(gameState);
+  if (!get(isMyTurn) || get(isOpponentDisconnected) || !get(awaitingRoll)) return;
   if ($state.phase !== 'selecting' && $state.phase !== 'lobby' && $state.phase !== 'hot_dice') return;
 
   isRollingInProgress = true;
@@ -748,6 +755,8 @@ function resetRpsState() {
 /** 结算（Bank）：将回合分加入总分，切换回合 */
 export function bankScore() {
   const $initial = get(gameState);
+  if (!get(isMyTurn) || get(isOpponentDisconnected)) return;
+  if ($initial.phase !== 'selecting' || !get(awaitingRoll) || $initial.turnScore <= 0) return;
   const bankedAmount = $initial.turnScore;
   const newTotal = $initial.players[$initial.currentPlayerIndex].totalScore + bankedAmount;
 
@@ -815,6 +824,8 @@ export function bankScore() {
 /** 结束回合（爆点或放弃），不加分 */
 export function endTurn(isBustTurn = false) {
   const $s = get(gameState);
+  if (!get(isMyTurn) || get(isOpponentDisconnected)) return;
+  if (!isBustTurn && $s.phase !== 'selecting') return;
   console.log(`[Farkle] endTurn: isBust=${isBustTurn}, 当前玩家=${$s.players[$s.currentPlayerIndex].id}, phase=${$s.phase}, isMyRoll=${isMyRoll}`);
   // 爆点时只有掷骰方发送 end_turn；接收 roll_reveal 的一方检测到爆点后只切换本地回合
   if (!isBustTurn || isMyRoll) {
@@ -934,11 +945,12 @@ export function initMessageHandler(): () => void {
   reliableChannel = createReliableChannel({
     sendRaw: (env) => sendRaw(env),
     onRawMessage: (handler) => onRawMessage(handler),
-    getStateHash: () => computeStateHash(get(gameState)),
+    getStateHash: () => `${computeStateHash(get(gameState))}|${get(awaitingRoll) ? 1 : 0}`,
     onStateMismatch: () => {
       console.warn('[GameStore] 状态哈希不匹配，等待显式重连同步');
     },
   });
+  reliableChannel.setTransportOnline(get(networkState).status === 'connected');
 
   const unsub = reliableChannel.onReceive((msg: GameMessage, _peerId: string) => {
     switch (msg.type) {
@@ -956,7 +968,10 @@ export function initMessageHandler(): () => void {
 
         const $appView = get(appView);
         const $role = get(myRole);
-        const shouldRestoreReturningHost = $role === 'guest' && msg.role === 'host';
+        // In a two-player room, if the surviving in-game peer is guest,
+        // the reconnecting peer must be the original host. This also covers
+        // host refreshes where localStorage role memory is missing.
+        const shouldRestoreReturningHost = $role === 'guest';
         if ($appView === 'game' && ($role === 'host' || shouldRestoreReturningHost)) {
           const targetRole: PlayerId = shouldRestoreReturningHost ? 'host' : 'guest';
           console.log(`[GameStore] 游戏中收到 player_hello，发送 game_state_sync 给 ${targetRole}`);
@@ -1183,17 +1198,28 @@ export function initMessageHandler(): () => void {
         {
           const localState = get(gameState);
           const localView = get(appView);
+          const localAwaitingRoll = get(awaitingRoll);
           const isFreshLocalState = localView !== 'game' || localState.phase === 'lobby';
           if (!isFreshLocalState && msg.state.gameId !== localState.gameId) {
             console.warn(`[GameStore] 忽略非当前局快照: local=${localState.gameId}, remote=${msg.state.gameId}`);
             break;
           }
-          if (!isFreshLocalState && msg.state.stateVersion <= localState.stateVersion) {
+          if (!isFreshLocalState && msg.state.stateVersion < localState.stateVersion) {
             console.warn(`[GameStore] 忽略旧快照: local=${localState.stateVersion}, remote=${msg.state.stateVersion}`);
+            break;
+          }
+          if (!isFreshLocalState
+            && msg.state.stateVersion === localState.stateVersion
+            && msg.awaitingRoll === localAwaitingRoll) {
+            console.warn(`[GameStore] 忽略重复快照: version=${localState.stateVersion}, awaitingRoll=${localAwaitingRoll}`);
             break;
           }
         }
         myRole.set(msg.yourRole);
+        {
+          const roomCode = get(networkState).roomCode;
+          if (roomCode) rememberRoomRole(roomCode, msg.yourRole);
+        }
         setAutoReconnect(msg.yourRole !== 'host');
         gameState.set(msg.state);
         awaitingRoll.set(msg.awaitingRoll);
@@ -1204,7 +1230,8 @@ export function initMessageHandler(): () => void {
       case 'request_state_sync': {
         // 对端重连后主动请求状态同步 → host 响应权威快照
         const $appView = get(appView);
-        if ($appView === 'game' && get(myRole) === 'host') {
+        const $role = get(myRole);
+        if ($appView === 'game' && $role === 'host') {
           console.log('[GameStore] 收到 request_state_sync，host 发送 game_state_sync');
           const $s = get(gameState);
           const $ar = get(awaitingRoll);
@@ -1212,6 +1239,16 @@ export function initMessageHandler(): () => void {
             type: 'game_state_sync',
             state: $s,
             yourRole: 'guest',
+            awaitingRoll: $ar,
+          });
+        } else if ($appView === 'game' && $role === 'guest' && get(isOpponentDisconnected)) {
+          console.log('[GameStore] 收到 request_state_sync，guest 恢复返回的 host');
+          const $s = get(gameState);
+          const $ar = get(awaitingRoll);
+          sendGameMessage({
+            type: 'game_state_sync',
+            state: $s,
+            yourRole: 'host',
             awaitingRoll: $ar,
           });
         }

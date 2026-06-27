@@ -26,6 +26,8 @@ interface Envelope {
 
 const CRITICAL_TYPES = new Set([
   'game_start',
+  'player_hello',
+  'player_ack',
   'rps_commit',
   'rps_reveal',
   'dice_confirm',
@@ -76,6 +78,7 @@ export function createReliableChannel(config: ChannelConfig) {
 
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let destroyed = false;
+  let transportOnline = false;
 
   // ── 发送 ───────────────────────────────────
 
@@ -88,10 +91,13 @@ export function createReliableChannel(config: ChannelConfig) {
 
     const seq = nextSeq();
     const env: Envelope = { _s: seq, _m: msg };
-    sendRaw(env);
+    const isCritical = CRITICAL_TYPES.has(msg.type);
+    if (transportOnline) {
+      sendRaw(env);
+    }
 
     // 关键消息：加入待确认队列
-    if (CRITICAL_TYPES.has(msg.type)) {
+    if (isCritical) {
       addPending(seq, env);
     }
   }
@@ -104,6 +110,11 @@ export function createReliableChannel(config: ChannelConfig) {
   function retryOrDrop(seq: number): void {
     const entry = pending.get(seq);
     if (!entry) return;
+
+    if (!transportOnline) {
+      entry.timer = setTimeout(() => retryOrDrop(seq), ACK_TIMEOUT_MS);
+      return;
+    }
 
     entry.retries++;
     if (entry.retries > MAX_RETRIES) {
@@ -123,6 +134,16 @@ export function createReliableChannel(config: ChannelConfig) {
       clearTimeout(entry.timer);
       pending.delete(refSeq);
     }
+  }
+
+  function flushPending(): void {
+    if (!transportOnline) return;
+
+    pending.forEach(entry => {
+      clearTimeout(entry.timer);
+      sendRaw(entry.msg);
+      entry.timer = setTimeout(() => retryOrDrop(entry.seq), ACK_TIMEOUT_MS);
+    });
   }
 
   // ── 接收 ───────────────────────────────────
@@ -216,6 +237,22 @@ export function createReliableChannel(config: ChannelConfig) {
     heartbeatStarted = false;
   }
 
+  function setTransportOnline(online: boolean): void {
+    if (destroyed) return;
+
+    const wasOnline = transportOnline;
+    transportOnline = online;
+
+    if (!online) {
+      stopPing();
+      return;
+    }
+
+    if (!wasOnline) {
+      flushPending();
+    }
+  }
+
   // ── 订阅 ───────────────────────────────────
 
   const unsubRaw = onRawMessage(handleEnvelope);
@@ -240,5 +277,5 @@ export function createReliableChannel(config: ChannelConfig) {
     appHandlers.length = 0;
   }
 
-  return { send, onReceive, startHeartbeat, destroy };
+  return { send, onReceive, startHeartbeat, setTransportOnline, destroy };
 }

@@ -1,9 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { getRememberedRoomRole, initRoom, networkState, rememberRoomRole, setAutoReconnect } from '$lib/network/trystero';
-  import { sendMessage } from '$lib/network/trystero';
   import { PROTOCOL_VERSION } from '$lib/network/protocol';
-  import { myRole, myName, initMessageHandler, appView } from '$lib/stores/gameStore';
+  import { myRole, myName, initMessageHandler, sendReliableGameMessage, appView } from '$lib/stores/gameStore';
   import ManualConnect from './ManualConnect.svelte';
 
   let {
@@ -18,6 +17,7 @@
   let waitingSince = $state<number | null>(null);
   let joined = $state(false);
   let showManual = $state(false);
+  let helloSent = $state(false);
 
   networkState.subscribe(ns => {
     status = ns.status;
@@ -39,9 +39,15 @@
 
   // 连接成功后自动发送 hello
   $effect(() => {
+    if (status !== 'connected') {
+      helloSent = false;
+    }
+
     if (status === 'connected' && joined) {
+      if (helloSent) return;
       const role = getRememberedRoomRole(roomCode.trim().toUpperCase()) ?? 'guest';
-      sendMessage({ type: 'player_hello', name: playerName, protocolVersion: PROTOCOL_VERSION, role });
+      sendReliableGameMessage({ type: 'player_hello', name: playerName, protocolVersion: PROTOCOL_VERSION, role });
+      helloSent = true;
     }
   });
 
