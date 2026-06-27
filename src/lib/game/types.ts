@@ -102,6 +102,10 @@ export type GamePhase =
 // ─────────────────────────────────────────────
 
 export interface GameState {
+  /** Unique id for one match, shared by both peers. Used to reject stale sync snapshots. */
+  gameId: string;
+  /** Monotonic version for authoritative state snapshots. */
+  stateVersion: number;
   phase: GamePhase;
   config: GameConfig;
   players: [Player, Player];

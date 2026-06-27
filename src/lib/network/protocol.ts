@@ -19,7 +19,7 @@ export type GameMessage =
 
   // ── 游戏准备 ──────────────────────────────────
   /** 房主广播游戏配置，触发游戏开始 */
-  | { type: 'game_start'; config: GameConfig }
+  | { type: 'game_start'; config: GameConfig; gameId: string }
 
   // ── 掷骰阶段（每次掷骰） ───────────────────────
   /** 阶段一：掷骰方发送 SHA-256(seed+nonce) 承诺 */

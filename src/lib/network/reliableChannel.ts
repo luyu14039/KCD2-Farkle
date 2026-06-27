@@ -24,7 +24,19 @@ interface Envelope {
 
 // ── 配置 ────────────────────────────────────────
 
-const CRITICAL_TYPES = new Set(['bank_score', 'end_turn', 'game_state_sync', 'request_state_sync']);
+const CRITICAL_TYPES = new Set([
+  'game_start',
+  'rps_commit',
+  'rps_reveal',
+  'dice_confirm',
+  'draft_pick',
+  'roll_reveal',
+  'select_dice',
+  'bank_score',
+  'end_turn',
+  'game_state_sync',
+  'request_state_sync',
+]);
 const ACK_TIMEOUT_MS = 3000;
 const MAX_RETRIES = 5;
 const PING_INTERVAL_MS = 8_000;
@@ -58,7 +70,6 @@ export function createReliableChannel(config: ChannelConfig) {
 
   // 状态
   let seqCounter = 0;
-  let lastReceivedSeq = 0;
   const receivedSeqs = new Set<number>();      // 去重
   const pending = new Map<number, PendingEntry>(); // 待确认消息
   const appHandlers: AppHandler[] = [];
@@ -119,6 +130,15 @@ export function createReliableChannel(config: ChannelConfig) {
   function handleEnvelope(env: Envelope, peerId: string): void {
     if (destroyed) return;
 
+    if (env && typeof (env as unknown as GameMessage).type === 'string') {
+      for (const handler of appHandlers) {
+        try { handler(env as unknown as GameMessage, peerId); } catch (err) {
+          console.error('[Reliable] handler 异常:', err);
+        }
+      }
+      return;
+    }
+
     const seq = env._s;
 
     // 1) 内部消息处理
@@ -148,14 +168,6 @@ export function createReliableChannel(config: ChannelConfig) {
     const isDuplicate = receivedSeqs.has(seq);
     if (!isDuplicate) {
       receivedSeqs.add(seq);
-
-      // 序列号跳跃 → 可能丢包（仅新消息时检测）
-      if (lastReceivedSeq > 0 && seq > lastReceivedSeq + 1) {
-        console.warn(`[Reliable] 检测到丢包: lastSeq=${lastReceivedSeq} currentSeq=${seq} gap=${seq - lastReceivedSeq - 1}`);
-      }
-      if (seq > lastReceivedSeq) {
-        lastReceivedSeq = seq;
-      }
 
       // 清理旧序列号（防止 Set 无限增长）
       if (receivedSeqs.size > 1000) {

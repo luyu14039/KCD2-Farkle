@@ -83,6 +83,23 @@ describe('reliableChannel', () => {
       });
     });
 
+    it('delivers legacy unwrapped GameMessage to app handler', () => {
+      const ch = createChannel();
+      const received: GameMessage[] = [];
+
+      ch.onReceive((msg) => { received.push(msg); });
+
+      transport.receiveRaw({
+        type: 'player_hello',
+        name: 'Guest',
+        protocolVersion: 2,
+      });
+
+      expect(received).toEqual([
+        { type: 'player_hello', name: 'Guest', protocolVersion: 2 },
+      ]);
+    });
+
     it('deduplicates messages with same seq', () => {
       const ch = createChannel();
       const received: GameMessage[] = [];
@@ -112,17 +129,18 @@ describe('reliableChannel', () => {
       expect(transport.sentMessages).toHaveLength(1);
       expect(transport.sentMessages[0]._m.type).toBe('bank_score');
 
-      // 1.5s 后应重传
-      await vi.advanceTimersByTimeAsync(1500);
+      // 3s 后应重传
+      await vi.advanceTimersByTimeAsync(3000);
       expect(transport.sentMessages).toHaveLength(2);
       expect(transport.sentMessages[1]._s).toBe(1); // 相同 seq
 
-      // 再 1.5s → 第 3 次
-      await vi.advanceTimersByTimeAsync(1500);
+      // 再 3s → 第 3 次
+      await vi.advanceTimersByTimeAsync(3000);
       expect(transport.sentMessages).toHaveLength(3);
 
-      // 再 1.5s → 第 4 次（超过 3 次重试，应停止）
-      await vi.advanceTimersByTimeAsync(1500);
+      // 再 3s → 第 4 次
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(transport.sentMessages).toHaveLength(4);
       // 第 3 次重试后丢弃，不再发送
       // total: 1 initial + 3 retries = 4
       // Wait, the first send is NOT counted as a retry. So we have 1 initial + 3 retries = 4 total.
@@ -172,7 +190,7 @@ describe('reliableChannel', () => {
 
       transport.receiveRaw({
         _s: 10,
-        _m: { type: 'select_dice', dieIds: [1], turnScore: 100 },
+        _m: { type: 'player_ack', hostName: 'Host', protocolVersion: 2 },
       });
 
       const acks = transport.sentMessages.filter((m: any) => m._t === 'ack');
@@ -229,25 +247,29 @@ describe('reliableChannel', () => {
     });
   });
 
-  describe('gap detection', () => {
-    it('logs warning on seq gap (potential packet loss)', () => {
+  describe('interleaved internal messages', () => {
+    it('does not warn when app message seq numbers skip over internal traffic', () => {
       const warnSpy = vi.spyOn(console, 'warn');
       const ch = createChannel();
+      const received: GameMessage[] = [];
+      ch.onReceive((msg) => { received.push(msg); });
 
       transport.receiveRaw({
         _s: 1,
         _m: { type: 'select_dice', dieIds: [1], turnScore: 100 },
       });
 
-      // 跳跃 seq（跳过了 2, 3, 4）
+      transport.receiveRaw({ _s: 2, _t: 'ping' });
+      transport.receiveRaw({ _s: 3, _t: 'ack', _r: 99 });
+      transport.receiveRaw({ _s: 4, _t: 'pong', _h: stateHash });
+
       transport.receiveRaw({
         _s: 5,
         _m: { type: 'select_dice', dieIds: [2], turnScore: 200 },
       });
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('丢包')
-      );
+      expect(received).toHaveLength(2);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('丢包'));
 
       warnSpy.mockRestore();
     });

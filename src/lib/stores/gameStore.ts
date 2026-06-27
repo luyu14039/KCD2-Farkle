@@ -17,7 +17,7 @@ import { createReliableChannel } from '$lib/network/reliableChannel';
 
 /** 计算游戏状态简易哈希（用于心跳校验双端同步） */
 function computeStateHash(state: GameState): string {
-  const key = `${state.turnScore}|${state.players[0].totalScore}|${state.players[1].totalScore}|${state.currentPlayerIndex}|${state.phase}`;
+  const key = `${state.gameId}|${state.stateVersion}|${state.turnScore}|${state.players[0].totalScore}|${state.players[1].totalScore}|${state.currentPlayerIndex}`;
   let hash = 0;
   for (let i = 0; i < key.length; i++) {
     hash = ((hash << 5) - hash) + key.charCodeAt(i);
@@ -100,19 +100,21 @@ networkState.subscribe(ns => {
       stopReconnectCountdown();
       isOpponentDisconnected.set(false);
 
-      // 谁在游戏中谁就推送状态快照（不限于 host）
       const $s = get(gameState);
       const $awaitingRoll = get(awaitingRoll);
       const $role = get(myRole);
-      console.log(`[GameStore] 重连检测，作为 ${$role} 发送 game_state_sync`);
-      sendGameMessage({
-        type: 'game_state_sync',
-        state: $s,
-        yourRole: $role === 'host' ? 'guest' : 'host',
-        awaitingRoll: $awaitingRoll,
-      });
-      if ($role !== 'host') {
-        // 客人端：如果 3s 内未收到 game_state_sync，主动请求
+      if ($role === 'host') {
+        console.log('[GameStore] 重连检测，host 发送 game_state_sync');
+        sendGameMessage({
+          type: 'game_state_sync',
+          state: $s,
+          yourRole: 'guest',
+          awaitingRoll: $awaitingRoll,
+        });
+      } else {
+        console.log('[GameStore] 重连检测，guest 请求 game_state_sync');
+        sendGameMessage({ type: 'request_state_sync' });
+        // 客人端：如果 3s 内未收到 game_state_sync，再请求一次
         if (requestSyncTimer !== null) clearTimeout(requestSyncTimer);
         requestSyncTimer = setTimeout(() => {
           console.warn('[GameStore] 重连后未收到同步，主动请求 game_state_sync');
@@ -173,8 +175,21 @@ export const diceSelection = writable<DiceSelectionInfo>(createInitialSelection(
 //  游戏状态 Store
 // ─────────────────────────────────────────────
 
-function createInitialState(config: GameConfig = DEFAULT_CONFIG): GameState {
+function createGameId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `game-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function bumpStateVersion(state: GameState): GameState {
+  return { ...state, stateVersion: state.stateVersion + 1 };
+}
+
+function createInitialState(config: GameConfig = DEFAULT_CONFIG, gameId = createGameId()): GameState {
   return {
+    gameId,
+    stateVersion: 0,
     phase: 'lobby',
     config,
     players: [
@@ -423,7 +438,7 @@ export function startGame(config: GameConfig) {
   // Host 不主动重连，原地等待 Guest 重连，避免双方同时重连的竞争条件
   setAutoReconnect(false);
   const state = createInitialState(config);
-  sendGameMessage({ type: 'game_start', config });
+  sendGameMessage({ type: 'game_start', config, gameId: state.gameId });
 
   if (config.specialDiceCount === 0) {
     // 不使用特殊骰子：跳过选骰，直接猜拳决定先后手
@@ -488,12 +503,12 @@ export function executeRoll(seed: number) {
     const bust = isBust(newDice);
 
     console.log(`[Farkle] executeRoll完成: bust=${bust}, rollCount=${$s.rollCount + 1}`);
-    return {
+    return bumpStateVersion({
       ...$s,
       dice: newDice,
       phase: bust ? 'bust' : 'rolling',
       rollCount: $s.rollCount + 1,
-    };
+    });
   });
 
   selectedDieIds.set([]);
@@ -572,10 +587,10 @@ export function confirmSelection() {
     // 检测 Hot Dice
     if (isHotDice(updated.dice)) {
       console.log('[Farkle] 本地满盘(Hot Dice)！进入 hot_dice 阶段');
-      return { ...updated, phase: 'hot_dice' };
+      return bumpStateVersion({ ...updated, phase: 'hot_dice' });
     }
 
-    return { ...updated, phase: 'selecting' };
+    return bumpStateVersion({ ...updated, phase: 'selecting' });
   });
 
   selectedDieIds.set([]);
@@ -621,7 +636,7 @@ export function confirmDiceSelection(picks: string[]) {
   const $role = get(myRole);
 
   // 保存到本地游戏状态
-  gameState.update($s => ({
+  gameState.update($s => bumpStateVersion({
     ...$s,
     ...($role === 'host' ? { hostDice: picks } : { guestDice: picks }),
   }));
@@ -640,7 +655,7 @@ export function confirmDiceSelection(picks: string[]) {
 
 /** 双方都选完 → 进入猜拳决定先后手 */
 function transitionToDiceSelectionRps() {
-  gameState.update($s => ({ ...$s, phase: 'rps' as GamePhase }));
+  gameState.update($s => bumpStateVersion({ ...$s, phase: 'rps' as GamePhase }));
   rpsPurpose.set('game_start');
   appView.set('rps');
   resetRpsState();
@@ -697,7 +712,7 @@ function applyDraftPick(diceId: string, picker: PlayerId) {
 
   // 保存到游戏状态
   const $ds = get(diceSelection);
-  gameState.update($s => ({
+  gameState.update($s => bumpStateVersion({
     ...$s,
     ...($role === 'host'
       ? { hostDice: $ds.myPicks, guestDice: $ds.opponentPicks }
@@ -719,7 +734,7 @@ function startDraft(firstPicker: PlayerId) {
     draftTurn: firstPicker,
     draftPool: pool,
   });
-  gameState.update($s => ({ ...$s, phase: 'dice_selection' as GamePhase }));
+  gameState.update($s => bumpStateVersion({ ...$s, phase: 'dice_selection' as GamePhase }));
   appView.set('dice_selection');
 }
 
@@ -752,19 +767,19 @@ export function bankScore() {
 
     // 检测胜利
     if (newTotal2 >= $s.config.targetScore) {
-      return {
+      return bumpStateVersion({
         ...$s,
         players: newPlayers,
         phase: 'game_over' as GamePhase,
         winner: player.id,
         turnScore: 0,
-      };
+      });
     }
 
     // 切换回合
     const nextIndex = ($s.currentPlayerIndex === 0 ? 1 : 0) as 0 | 1;
     const nextPlayerDice = nextIndex === 0 ? $s.hostDice : $s.guestDice;
-    return {
+    return bumpStateVersion({
       ...$s,
       players: newPlayers,
       currentPlayerIndex: nextIndex,
@@ -772,7 +787,7 @@ export function bankScore() {
       turnScore: 0,
       rollCount: 0,
       phase: 'selecting' as GamePhase,
-    };
+    });
   });
 
   selectedDieIds.set([]);
@@ -813,14 +828,14 @@ export function endTurn(isBustTurn = false) {
   gameState.update($s => {
     const nextIndex = ($s.currentPlayerIndex === 0 ? 1 : 0) as 0 | 1;
     const nextPlayerDice = nextIndex === 0 ? $s.hostDice : $s.guestDice;
-    return {
+    return bumpStateVersion({
       ...$s,
       currentPlayerIndex: nextIndex,
       dice: createDice(nextPlayerDice),
       turnScore: 0,
       rollCount: 0,
       phase: 'selecting' as GamePhase,
-    };
+    });
   });
 
   selectedDieIds.set([]);
@@ -912,25 +927,16 @@ function resolveRps(mine: RpsChoice, theirs: RpsChoice): 'me' | 'them' | 'draw' 
 // ─────────────────────────────────────────────
 
 export function initMessageHandler(): () => void {
+  reliableChannel?.destroy();
+  reliableChannel = null;
+
   // 创建可靠传输通道
   reliableChannel = createReliableChannel({
     sendRaw: (env) => sendRaw(env),
     onRawMessage: (handler) => onRawMessage(handler),
     getStateHash: () => computeStateHash(get(gameState)),
     onStateMismatch: () => {
-      // 状态哈希不匹配 → 谁在游戏中谁推送同步
-      setTimeout(() => {
-        if (get(appView) === 'game') {
-          const role = get(myRole);
-          console.warn(`[GameStore] 状态不匹配，作为 ${role} 主动推送同步`);
-          sendGameMessage({
-            type: 'game_state_sync',
-            state: get(gameState),
-            yourRole: role === 'host' ? 'guest' : 'host',
-            awaitingRoll: get(awaitingRoll),
-          });
-        }
-      }, 100);
+      console.warn('[GameStore] 状态哈希不匹配，等待显式重连同步');
     },
   });
 
@@ -948,18 +954,15 @@ export function initMessageHandler(): () => void {
         const $myName2 = get(myName);
         sendGameMessage({ type: 'player_ack', hostName: $myName2, protocolVersion: PROTOCOL_VERSION });
 
-        // 如果游戏正在进行中，发送状态同步（处理重连场景）
-        // 谁在游戏中谁就是权威，不限于 host
         const $appView = get(appView);
-        if ($appView === 'game') {
-          const $role = get(myRole);
-          console.log(`[GameStore] 游戏中收到 player_hello，作为 ${$role} 发送 game_state_sync`);
+        if ($appView === 'game' && get(myRole) === 'host') {
+          console.log('[GameStore] 游戏中收到 player_hello，host 发送 game_state_sync');
           const $s = get(gameState);
           const $awaitingRoll = get(awaitingRoll);
           sendGameMessage({
             type: 'game_state_sync',
             state: $s,
-            yourRole: $role === 'host' ? 'guest' : 'host',
+            yourRole: 'guest',
             awaitingRoll: $awaitingRoll,
           });
         }
@@ -980,7 +983,7 @@ export function initMessageHandler(): () => void {
       case 'game_start': {
         // Guest 负责主动重连
         setAutoReconnect(true);
-        const state = createInitialState(msg.config);
+        const state = createInitialState(msg.config, msg.gameId);
         if (msg.config.specialDiceCount === 0) {
           gameState.set(state);
           rpsPurpose.set('game_start');
@@ -1040,12 +1043,12 @@ export function initMessageHandler(): () => void {
                     : (get(myRole) === 'host' ? 1 : 0)) as 0 | 1;
                   gameState.update($s => {
                     const firstPlayerDice = firstIndex === 0 ? $s.hostDice : $s.guestDice;
-                    return {
+                    return bumpStateVersion({
                       ...$s,
                       phase: 'selecting',
                       currentPlayerIndex: firstIndex,
                       dice: createDice(firstPlayerDice),
-                    };
+                    });
                   });
                   appView.set('game');
                   resetRpsState();
@@ -1080,10 +1083,10 @@ export function initMessageHandler(): () => void {
 
           if (isHotDice(updated.dice)) {
             console.log('[Farkle P2P] 检测到对手满盘(Hot Dice)！重置骰子，等待对手重投');
-            return { ...synced, dice: resetDiceForHotDice(updated.dice), phase: 'hot_dice' as GamePhase };
+            return bumpStateVersion({ ...synced, dice: resetDiceForHotDice(updated.dice), phase: 'hot_dice' as GamePhase });
           }
 
-          return synced;
+          return bumpStateVersion(synced);
         });
         break;
       }
@@ -1101,12 +1104,12 @@ export function initMessageHandler(): () => void {
           };
 
           if (msg.newTotal >= $s.config.targetScore) {
-            return { ...$s, players: newPlayers, phase: 'game_over' as GamePhase, winner: player.id, turnScore: 0 };
+            return bumpStateVersion({ ...$s, players: newPlayers, phase: 'game_over' as GamePhase, winner: player.id, turnScore: 0 });
           }
 
           const nextIndex = ($s.currentPlayerIndex === 0 ? 1 : 0) as 0 | 1;
           const nextPlayerDice = nextIndex === 0 ? $s.hostDice : $s.guestDice;
-          return {
+          return bumpStateVersion({
             ...$s,
             players: newPlayers,
             currentPlayerIndex: nextIndex,
@@ -1114,7 +1117,7 @@ export function initMessageHandler(): () => void {
             turnScore: 0,
             rollCount: 0,
             phase: 'selecting' as GamePhase,
-          };
+          });
         });
         selectedDieIds.set([]);
         awaitingRoll.set(true);
@@ -1126,14 +1129,14 @@ export function initMessageHandler(): () => void {
         gameState.update($s => {
           const nextIndex = ($s.currentPlayerIndex === 0 ? 1 : 0) as 0 | 1;
           const nextPlayerDice = nextIndex === 0 ? $s.hostDice : $s.guestDice;
-          return {
+          return bumpStateVersion({
             ...$s,
             currentPlayerIndex: nextIndex,
             dice: createDice(nextPlayerDice),
             turnScore: 0,
             rollCount: 0,
             phase: 'selecting' as GamePhase,
-          };
+          });
         });
         selectedDieIds.set([]);
         awaitingRoll.set(true);
@@ -1143,7 +1146,7 @@ export function initMessageHandler(): () => void {
       // ── 骰子选择 ──
       case 'dice_confirm': {
         const opRole: PlayerId = get(myRole) === 'host' ? 'guest' : 'host';
-        gameState.update($s => ({
+        gameState.update($s => bumpStateVersion({
           ...$s,
           ...(opRole === 'host' ? { hostDice: msg.diceIds } : { guestDice: msg.diceIds }),
         }));
@@ -1174,6 +1177,19 @@ export function initMessageHandler(): () => void {
           clearTimeout(requestSyncTimer);
           requestSyncTimer = null;
         }
+        {
+          const localState = get(gameState);
+          const localView = get(appView);
+          const isFreshLocalState = localView !== 'game' || localState.phase === 'lobby';
+          if (!isFreshLocalState && msg.state.gameId !== localState.gameId) {
+            console.warn(`[GameStore] 忽略非当前局快照: local=${localState.gameId}, remote=${msg.state.gameId}`);
+            break;
+          }
+          if (!isFreshLocalState && msg.state.stateVersion <= localState.stateVersion) {
+            console.warn(`[GameStore] 忽略旧快照: local=${localState.stateVersion}, remote=${msg.state.stateVersion}`);
+            break;
+          }
+        }
         myRole.set(msg.yourRole);
         gameState.set(msg.state);
         awaitingRoll.set(msg.awaitingRoll);
@@ -1182,17 +1198,16 @@ export function initMessageHandler(): () => void {
         break;
 
       case 'request_state_sync': {
-        // 对端重连后主动请求状态同步 → 谁在游戏中谁响应
+        // 对端重连后主动请求状态同步 → host 响应权威快照
         const $appView = get(appView);
-        if ($appView === 'game') {
-          const $role = get(myRole);
-          console.log(`[GameStore] 收到 request_state_sync，作为 ${$role} 发送 game_state_sync`);
+        if ($appView === 'game' && get(myRole) === 'host') {
+          console.log('[GameStore] 收到 request_state_sync，host 发送 game_state_sync');
           const $s = get(gameState);
           const $ar = get(awaitingRoll);
           sendGameMessage({
             type: 'game_state_sync',
             state: $s,
-            yourRole: $role === 'host' ? 'guest' : 'host',
+            yourRole: 'guest',
             awaitingRoll: $ar,
           });
         }
