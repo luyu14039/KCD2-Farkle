@@ -4,6 +4,7 @@
     acceptOffer,
     finalizeAnswer,
     closeManualConnection,
+    type ConnectionMode,
   } from '$lib/network/manualP2P';
   import { networkState } from '$lib/network/trystero';
 
@@ -35,6 +36,7 @@
   let inputOffer  = $state('');
   let errorMsg   = $state('');
   let copied     = $state(false);
+  let connectionMode = $state<ConnectionMode>('default');
   let gatherSeconds = $state(0);
   let gatherTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -82,7 +84,7 @@
     phase = 'gathering';
     startGatherTimer();
     try {
-      offerCode = await startOffer();
+      offerCode = await startOffer(connectionMode);
       phase = 'show_offer';
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : '生成连接码失败，请重试';
@@ -113,7 +115,9 @@
     phase = 'gathering';
     startGatherTimer();
     try {
-      answerCode = await acceptOffer(inputOffer.trim());
+      const result = await acceptOffer(inputOffer.trim(), connectionMode);
+      answerCode = result.answerCode;
+      connectionMode = result.mode;
       phase = 'show_answer';
     } catch {
       errorMsg = '连接码无效，请联系对方重新生成';
@@ -144,6 +148,7 @@
     answerCode = '';
     inputAnswer = '';
     inputOffer = '';
+    connectionMode = 'default';
   }
 </script>
 
@@ -156,6 +161,22 @@
     </div>
   </div>
 
+  {#if phase === 'idle'}
+    <label class="mode-toggle">
+      <input
+        type="checkbox"
+        checked={connectionMode === 'lan'}
+        onchange={(e) => (connectionMode = e.currentTarget.checked ? 'lan' : 'default')}
+      />
+      <span>局域网优先模式（同一 Wi-Fi / 路由器）</span>
+    </label>
+    <p class="hint mode-hint">
+      {connectionMode === 'lan'
+        ? '仅使用本地网络候选，连接更快；不在同一局域网时可能失败。'
+        : '自动尝试公网与局域网候选，兼容性更高。'}
+    </p>
+  {/if}
+
   {#if role === 'host'}
     <!-- ══ 房主流程 ══ -->
     {#if phase === 'idle'}
@@ -167,7 +188,11 @@
         <span class="dot-anim"></span>
         正在收集连接信息…已用 {gatherSeconds} 秒
       </div>
-      <p class="hint">通常需要 5～20 秒，收集完毕后自动进入下一步</p>
+      <p class="hint">
+        {connectionMode === 'lan'
+          ? '局域网优先模式通常 1～6 秒，收集完毕后自动进入下一步'
+          : '通常需要 5～20 秒，收集完毕后自动进入下一步'}
+      </p>
 
     {:else if phase === 'show_offer'}
       <p class="step">① 将下方连接码发给对方（微信/QQ 粘贴均可）</p>
@@ -238,6 +263,10 @@
         等待对方确认连接，连接建立后自动进入游戏…
       </div>
 
+      {#if connectionMode === 'lan'}
+        <p class="hint">当前为局域网优先模式，双方需在同一局域网中。</p>
+      {/if}
+
     {:else if phase === 'connected'}
       <p class="success">✓ 连接已建立！</p>
 
@@ -298,6 +327,26 @@
     color: #6a5a3a;
     text-align: center;
     margin: 0;
+  }
+
+  .mode-hint {
+    align-self: flex-start;
+  }
+
+  .mode-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #c8b888;
+    font-size: 0.85rem;
+    user-select: none;
+  }
+
+  .mode-toggle input {
+    width: 16px;
+    height: 16px;
+    accent-color: #d4a843;
   }
 
   .code-block {
